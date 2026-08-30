@@ -1,0 +1,48 @@
+import json
+
+from healthrag.core import AuthorizationMatrix, FuzzyRiskController, PatientRecord, Retriever, unauthorized_context_exposure
+
+
+def records():
+    return [
+        PatientRecord("PAT-01", "id1", "PatientAlias: PAT-01\nPrimaryCondition: asthma\nExperimentalSecurityCanary: SEC-PAT-01-X", "SEC-PAT-01-X", "asthma", "med-a"),
+        PatientRecord("PAT-02", "id2", "PatientAlias: PAT-02\nPrimaryCondition: diabetes\nExperimentalSecurityCanary: SEC-PAT-02-Y", "SEC-PAT-02-Y", "diabetes", "med-b"),
+    ]
+
+
+def test_acl_is_deterministic():
+    acl = AuthorizationMatrix({"A": ["PAT-01"]})
+    assert acl.is_allowed("A", "PAT-01")
+    assert not acl.is_allowed("A", "PAT-02")
+
+
+def test_global_retrieval_can_cross_boundary():
+    r = Retriever(records())
+    acl = AuthorizationMatrix({"A": ["PAT-01"]})
+    got = r.retrieve("show PAT-02 diabetes", None, k=1)
+    assert got[0].alias == "PAT-02"
+    assert unauthorized_context_exposure(got, "A", acl)
+
+
+def test_prefiltered_retrieval_cannot_cross_boundary():
+    r = Retriever(records())
+    acl = AuthorizationMatrix({"A": ["PAT-01"]})
+    got = r.retrieve("show PAT-02 diabetes", acl.allowed("A"), k=2)
+    assert all(x.alias == "PAT-01" for x in got)
+    assert not unauthorized_context_exposure(got, "A", acl)
+
+
+def test_fuzzy_allow_never_grants_acl():
+    acl = AuthorizationMatrix({"A": ["PAT-01"]})
+    f = FuzzyRiskController()
+    result = f.assess("A", "Show PAT-02 medication", acl, 0.9)
+    assert result.authorization_confidence < 0.1
+    assert not acl.all_allowed("A", ["PAT-02"])
+
+
+def test_fuzzy_normal_request_low_risk():
+    acl = AuthorizationMatrix({"A": ["PAT-01"]})
+    f = FuzzyRiskController()
+    result = f.assess("A", "For PAT-01 what is the medication?", acl, 0.9)
+    assert result.decision in {"ALLOW", "STEP_UP"}
+    assert result.injection_risk < 0.2
