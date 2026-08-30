@@ -1,28 +1,20 @@
 MODULE main
 VAR
   state : {LOGIN, AUTHENTICATED, RISK_CHECK, ACL_CHECK, RETRIEVE, LLM_RESPONSE, DENIED, COMPLETE};
+  auth_ok : boolean;
   acl_ok : boolean;
   fuzzy : {ALLOW, STEP_UP, DENY};
-  authenticated : boolean;
-  retrieved_target : boolean;
 ASSIGN
   init(state) := LOGIN;
+  init(auth_ok) := {TRUE, FALSE};
+  next(auth_ok) := auth_ok;
   init(acl_ok) := {TRUE, FALSE};
   next(acl_ok) := acl_ok;
   init(fuzzy) := {ALLOW, STEP_UP, DENY};
   next(fuzzy) := fuzzy;
-  init(authenticated) := FALSE;
-  next(authenticated) := case
-    state = LOGIN : TRUE;
-    TRUE : authenticated;
-  esac;
-  init(retrieved_target) := FALSE;
-  next(retrieved_target) := case
-    state = ACL_CHECK & acl_ok : TRUE;
-    TRUE : retrieved_target;
-  esac;
   next(state) := case
-    state = LOGIN : AUTHENTICATED;
+    state = LOGIN & auth_ok : AUTHENTICATED;
+    state = LOGIN & !auth_ok : DENIED;
     state = AUTHENTICATED : RISK_CHECK;
     state = RISK_CHECK & fuzzy = DENY : DENIED;
     state = RISK_CHECK & fuzzy != DENY : ACL_CHECK;
@@ -35,15 +27,17 @@ ASSIGN
     TRUE : state;
   esac;
 
--- P1: Unauthorized requests never reach retrieval.
+-- P1: Authentication failure cannot reach authenticated processing, retrieval, or LLM states.
+CTLSPEC AG (!auth_ok -> (state != AUTHENTICATED & state != RISK_CHECK & state != ACL_CHECK & state != RETRIEVE & state != LLM_RESPONSE & state != COMPLETE))
+-- P2: ACL-denied requests never reach retrieval.
 CTLSPEC AG (!acl_ok -> state != RETRIEVE)
--- P2: Retrieval implies deterministic ACL authorization.
-CTLSPEC AG (state = RETRIEVE -> acl_ok)
--- P3: Fuzzy ALLOW cannot override an ACL denial.
+-- P3: Retrieval implies both successful authentication and deterministic ACL authorization.
+CTLSPEC AG (state = RETRIEVE -> (auth_ok & acl_ok))
+-- P4: Fuzzy ALLOW cannot override an ACL denial.
 CTLSPEC AG ((fuzzy = ALLOW & !acl_ok) -> state != RETRIEVE)
--- P4: A fuzzy DENY prevents the LLM from being reached.
+-- P5: A fuzzy DENY at the risk gate transitions immediately to the safe terminal state.
 CTLSPEC AG ((state = RISK_CHECK & fuzzy = DENY) -> AX state = DENIED)
--- P5: A valid authorized, non-denied request eventually completes.
-CTLSPEC AG ((state = AUTHENTICATED & acl_ok & fuzzy != DENY) -> AF state = COMPLETE)
--- P6: A denied request eventually reaches the safe terminal state.
-CTLSPEC AG ((state = RISK_CHECK & fuzzy = DENY) -> AF state = DENIED)
+-- P6: A valid authenticated, authorized, non-denied request eventually completes.
+CTLSPEC AG ((state = AUTHENTICATED & auth_ok & acl_ok & fuzzy != DENY) -> AF state = COMPLETE)
+-- P7: Authentication failure at LOGIN transitions immediately to DENIED.
+CTLSPEC AG ((state = LOGIN & !auth_ok) -> AX state = DENIED)
