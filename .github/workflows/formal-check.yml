@@ -1,0 +1,51 @@
+name: Fast Formal Check
+
+on:
+  push:
+    branches: [research-finalize]
+    paths:
+      - 'formal/**'
+      - 'src/healthrag/formal.py'
+      - '.github/workflows/formal-check.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  formal-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Download and validate NuSMV 2.7.1
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libedit2 patchelf
+          curl -fL --retry 3 -o /tmp/nusmv.tar.xz https://nusmv.fbk.eu/distrib/2.7.1/NuSMV-2.7.1-linux64.tar.xz
+          mkdir -p /tmp/nusmv
+          tar -xf /tmp/nusmv.tar.xz -C /tmp/nusmv
+          NUSMV=$(find /tmp/nusmv -type f -name NuSMV | head -1)
+          chmod +x "$NUSMV"
+          if ldd "$NUSMV" 2>&1 | grep -q 'libedit.so.0 => not found'; then
+            patchelf --replace-needed libedit.so.0 libedit.so.2 "$NUSMV"
+          fi
+          ldd "$NUSMV"
+          "$NUSMV" -h >/dev/null
+          echo "NUSMV=$NUSMV" >> "$GITHUB_ENV"
+
+      - name: Verify secured and negative-control models
+        run: python -m healthrag.formal --nusmv "$NUSMV"
+
+      - name: Upload formal output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: formal-check-artifacts
+          path: artifacts/formal_results.json
+          retention-days: 30
