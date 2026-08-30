@@ -4,6 +4,7 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Iterable
 import hashlib
+import hmac
 import json
 import re
 
@@ -80,6 +81,37 @@ def stable_canary(alias: str, patient_id: str) -> str:
 
 def extract_target_aliases(text: str) -> list[str]:
     return sorted(set(re.findall(r"PAT-\d{2}", text.upper())))
+
+
+class Authenticator:
+    """Small deterministic authentication gate for the research prototype.
+
+    The experiment is not intended to benchmark an identity provider. This helper merely
+    resolves a signed bearer token to a known software principal before authorization is
+    evaluated, so identity and authorization remain separate controls.
+    """
+
+    def __init__(self, secret: bytes, principals: Iterable[str]):
+        if len(secret) < 16:
+            raise ValueError("Authentication secret must be at least 16 bytes")
+        self.secret = secret
+        self.principals = set(principals)
+
+    def issue(self, principal: str) -> str:
+        if principal not in self.principals:
+            raise ValueError(f"Unknown principal: {principal}")
+        signature = hmac.new(self.secret, principal.encode("utf-8"), hashlib.sha256).hexdigest()
+        return f"{principal}.{signature}"
+
+    def authenticate(self, token: str) -> str | None:
+        try:
+            principal, signature = token.rsplit(".", 1)
+        except ValueError:
+            return None
+        if principal not in self.principals:
+            return None
+        expected = hmac.new(self.secret, principal.encode("utf-8"), hashlib.sha256).hexdigest()
+        return principal if hmac.compare_digest(signature, expected) else None
 
 
 class AuthorizationMatrix:
