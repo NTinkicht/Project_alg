@@ -18,7 +18,7 @@ dependencies = [
 [project.optional-dependencies]
 experiment = [
   "torch>=2.2",
-  "transformers>=4.45",
+  "transformers>=4.45,<5",
   "safetensors>=0.4",
   "accelerate>=0.30",
 ]
