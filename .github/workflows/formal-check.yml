@@ -36,7 +36,15 @@ jobs:
             patchelf --replace-needed libedit.so.0 libedit.so.2 "$NUSMV"
           fi
           ldd "$NUSMV"
-          "$NUSMV" -h >/dev/null
+          set +e
+          "$NUSMV" -h >/tmp/nusmv_help.txt 2>&1
+          HELP_RC=$?
+          set -e
+          if [ "$HELP_RC" -ne 0 ] && [ "$HELP_RC" -ne 2 ]; then
+            cat /tmp/nusmv_help.txt
+            exit "$HELP_RC"
+          fi
+          grep -q 'NuSMV 2.7.1' /tmp/nusmv_help.txt
           echo "NUSMV=$NUSMV" >> "$GITHUB_ENV"
 
       - name: Verify secured and negative-control models
