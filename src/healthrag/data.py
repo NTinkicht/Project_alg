@@ -9,7 +9,13 @@ import zipfile
 
 from .core import PatientRecord, stable_canary, save_json
 
-SYNTHEA_URL = "https://raw.githubusercontent.com/synthetichealth/synthea-sample-data/main/downloads/latest/synthea_sample_data_fhir_latest.zip"
+# Pin the public Synthea sample-data repository snapshot used for this study so
+# future reruns do not silently pick up different patient bundles.
+SYNTHEA_SAMPLE_COMMIT = "9959d9178ea28f4ec10f17ee238b6fabe6eb0de5"
+SYNTHEA_URL = (
+    "https://raw.githubusercontent.com/synthetichealth/synthea-sample-data/"
+    f"{SYNTHEA_SAMPLE_COMMIT}/downloads/latest/synthea_sample_data_fhir_latest.zip"
+)
 RESOURCE_TYPES = {"Patient", "Condition", "MedicationRequest", "Medication", "Observation", "Encounter", "AllergyIntolerance", "Procedure"}
 
 
@@ -126,7 +132,7 @@ def main():
     args = ap.parse_args()
     args.archive.parent.mkdir(parents=True, exist_ok=True)
     if not args.archive.exists():
-        print(f"Downloading official Synthea sample from {args.url}")
+        print(f"Downloading pinned Synthea sample ({SYNTHEA_SAMPLE_COMMIT}) from {args.url}")
         urllib.request.urlretrieve(args.url, args.archive)
     records = build_dataset(args.archive, args.out)
     print(f"Prepared {len(records)} deterministic Synthea patient records in {args.out}")
