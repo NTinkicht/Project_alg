@@ -42,20 +42,29 @@ jobs:
       - name: Analyze empirical results
         run: python -m healthrag.analysis
 
-      - name: Download NuSMV 2.7.1
+      - name: Download and validate NuSMV 2.7.1
         run: |
           curl -fL --retry 3 -o /tmp/nusmv.tar.xz https://nusmv.fbk.eu/distrib/2.7.1/NuSMV-2.7.1-linux64.tar.xz
           mkdir -p /tmp/nusmv
           tar -xf /tmp/nusmv.tar.xz -C /tmp/nusmv
-          find /tmp/nusmv -type f -name NuSMV -print
           NUSMV=$(find /tmp/nusmv -type f -name NuSMV | head -1)
           chmod +x "$NUSMV"
+          NUSMV_ROOT=$(dirname "$(dirname "$NUSMV")")
+          NUSMV_LIB="$NUSMV_ROOT/lib"
+          export LD_LIBRARY_PATH="$NUSMV_LIB:${LD_LIBRARY_PATH:-}"
           echo "NUSMV=$NUSMV" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
+          echo "NuSMV executable: $NUSMV"
+          echo "Bundled library directory: $NUSMV_LIB"
+          ldd "$NUSMV" || true
+          "$NUSMV" -h >/tmp/nusmv_help.txt 2>&1 || { cat /tmp/nusmv_help.txt; exit 1; }
+          head -20 /tmp/nusmv_help.txt || true
 
       - name: Formal verification
         run: python -m healthrag.formal --nusmv "$NUSMV"
 
       - name: Collect reproducibility metadata
+        if: always()
         run: |
           python - <<'PY'
           import json, platform, sys
@@ -73,10 +82,12 @@ jobs:
               "prompt_count": 72,
               "architectures": ["prompt_only", "pre_retrieval_acl", "risk_aware"],
           }
+          Path("artifacts").mkdir(exist_ok=True)
           Path("artifacts/reproducibility.json").write_text(json.dumps(meta, indent=2))
           PY
 
       - name: Upload research artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: healthrag-research-artifacts
