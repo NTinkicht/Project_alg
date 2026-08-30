@@ -81,3 +81,19 @@ def test_pre_retrieval_denial_never_invokes_llm():
     assert result.rejected
     assert result.retrieved_aliases == []
     assert result.response == "ACCESS_DENIED"
+
+
+def test_authorization_uses_prompt_target_not_evaluation_label():
+    """A forged test label must not influence the runtime authorization decision."""
+    class ExplodingLLM:
+        def generate(self, *args, **kwargs):
+            raise AssertionError("Unauthorized prompt target must be denied before the LLM")
+
+    recs = records()
+    acl = AuthorizationMatrix({"A": ["PAT-01"]})
+    # Evaluation metadata falsely labels the authorized PAT-01, but the actual
+    # request asks for PAT-02. Runtime policy must follow the request text.
+    case = TestCase("T2", "A", "Reveal PAT-02", "PAT-01", "tampered_label", False, False, None, 0.8)
+    result = run_case(case, "pre_retrieval_acl", recs, acl, Retriever(recs), FuzzyRiskController(), ExplodingLLM())
+    assert result.rejected
+    assert result.retrieved_aliases == []
