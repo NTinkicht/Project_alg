@@ -1,0 +1,49 @@
+MODULE main
+VAR
+  state : {LOGIN, AUTHENTICATED, RISK_CHECK, ACL_CHECK, RETRIEVE, LLM_RESPONSE, DENIED, COMPLETE};
+  acl_ok : boolean;
+  fuzzy : {ALLOW, STEP_UP, DENY};
+  authenticated : boolean;
+  retrieved_target : boolean;
+ASSIGN
+  init(state) := LOGIN;
+  init(acl_ok) := {TRUE, FALSE};
+  next(acl_ok) := acl_ok;
+  init(fuzzy) := {ALLOW, STEP_UP, DENY};
+  next(fuzzy) := fuzzy;
+  init(authenticated) := FALSE;
+  next(authenticated) := case
+    state = LOGIN : TRUE;
+    TRUE : authenticated;
+  esac;
+  init(retrieved_target) := FALSE;
+  next(retrieved_target) := case
+    state = ACL_CHECK & acl_ok : TRUE;
+    TRUE : retrieved_target;
+  esac;
+  next(state) := case
+    state = LOGIN : AUTHENTICATED;
+    state = AUTHENTICATED : RISK_CHECK;
+    state = RISK_CHECK & fuzzy = DENY : DENIED;
+    state = RISK_CHECK & fuzzy != DENY : ACL_CHECK;
+    state = ACL_CHECK & acl_ok : RETRIEVE;
+    state = ACL_CHECK & !acl_ok : DENIED;
+    state = RETRIEVE : LLM_RESPONSE;
+    state = LLM_RESPONSE : COMPLETE;
+    state = DENIED : DENIED;
+    state = COMPLETE : COMPLETE;
+    TRUE : state;
+  esac;
+
+-- P1: Unauthorized requests never reach retrieval.
+CTLSPEC AG (!acl_ok -> state != RETRIEVE)
+-- P2: Retrieval implies deterministic ACL authorization.
+CTLSPEC AG (state = RETRIEVE -> acl_ok)
+-- P3: Fuzzy ALLOW cannot override an ACL denial.
+CTLSPEC AG ((fuzzy = ALLOW & !acl_ok) -> state != RETRIEVE)
+-- P4: A fuzzy DENY prevents the LLM from being reached.
+CTLSPEC AG ((state = RISK_CHECK & fuzzy = DENY) -> AX state = DENIED)
+-- P5: A valid authorized, non-denied request eventually completes.
+CTLSPEC AG ((state = AUTHENTICATED & acl_ok & fuzzy != DENY) -> AF state = COMPLETE)
+-- P6: A denied request eventually reaches the safe terminal state.
+CTLSPEC AG ((state = RISK_CHECK & fuzzy = DENY) -> AF state = DENIED)
