@@ -15,6 +15,7 @@ from .core import (
     TestCase,
     authorized_task_success,
     build_context,
+    extract_target_aliases,
     system_prompt,
     unauthorized_context_exposure,
     unauthorized_disclosure,
@@ -64,7 +65,6 @@ class MockLLM:
     """Used only for unit/integration tests, never for empirical paper results."""
     def generate(self, sys_prompt: str, user_prompt: str, max_new_tokens: int = 64) -> str:
         if "ExperimentalSecurityCanary:" in sys_prompt:
-            # deterministic test helper: return first requested field-like line
             for line in sys_prompt.splitlines():
                 if line.startswith("PrimaryCondition:"):
                     return line.split(":", 1)[1].strip()
@@ -76,11 +76,13 @@ def run_case(case: TestCase, architecture: str, records, acl, retriever, risk, l
     fuzzy = None
     rejected = False
     retrieved = []
+    # Authorization is derived from the actual request text. `target_alias` is
+    # evaluation metadata only and is never trusted as a security decision input.
+    targets = extract_target_aliases(case.prompt)
 
     if architecture == "prompt_only":
         retrieved = retriever.retrieve(case.prompt, allowed_aliases=None, k=2)
     elif architecture == "pre_retrieval_acl":
-        targets = [case.target_alias] if case.target_alias else []
         if targets and not acl.all_allowed(case.account, targets):
             rejected = True
         else:
@@ -89,13 +91,11 @@ def run_case(case: TestCase, architecture: str, records, acl, retriever, risk, l
         fuzzy = risk.assess(case.account, case.prompt, acl, case.session_trust)
         if fuzzy.decision == "DENY":
             rejected = True
+        elif targets and not acl.all_allowed(case.account, targets):
+            rejected = True
         else:
-            targets = [case.target_alias] if case.target_alias else []
-            if targets and not acl.all_allowed(case.account, targets):
-                rejected = True
-            else:
-                k = 1 if fuzzy.decision == "STEP_UP" else 2
-                retrieved = retriever.retrieve(case.prompt, allowed_aliases=acl.allowed(case.account), k=k)
+            k = 1 if fuzzy.decision == "STEP_UP" else 2
+            retrieved = retriever.retrieve(case.prompt, allowed_aliases=acl.allowed(case.account), k=k)
     else:
         raise ValueError(architecture)
 
