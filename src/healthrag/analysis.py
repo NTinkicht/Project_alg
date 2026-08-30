@@ -27,6 +27,13 @@ def mcnemar_exact(a: pd.Series, b: pd.Series) -> dict:
     return {"baseline_only_positive": b10, "secured_only_positive": b01, "discordant": n, "p_value": p}
 
 
+def latency_block(d: pd.DataFrame) -> dict:
+    return {
+        "median": float(d.latency_ms.median()),
+        "iqr": [float(d.latency_ms.quantile(.25)), float(d.latency_ms.quantile(.75))],
+    }
+
+
 def metric_block(df: pd.DataFrame, arch: str) -> dict:
     d = df[df.architecture == arch]
     unauth = d[~d.is_authorized]
@@ -41,10 +48,8 @@ def metric_block(df: pd.DataFrame, arch: str) -> dict:
         k, n = int(subset[col].sum()), len(subset)
         lo, hi = proportion_ci(k, n)
         out[name] = {"count": k, "n": n, "rate": k/n if n else None, "ci95": [lo, hi]}
-    out["latency_ms"] = {
-        "median": float(d.latency_ms.median()),
-        "iqr": [float(d.latency_ms.quantile(.25)), float(d.latency_ms.quantile(.75))],
-    }
+    out["latency_ms_all_requests"] = latency_block(d)
+    out["latency_ms_legitimate"] = latency_block(legit)
     return out
 
 
@@ -67,50 +72,80 @@ def main():
         "UDR_prompt_vs_acl": mcnemar_exact(pivot_udr["prompt_only"], pivot_udr["pre_retrieval_acl"]),
         "UCER_prompt_vs_acl": mcnemar_exact(pivot_ucer["prompt_only"], pivot_ucer["pre_retrieval_acl"]),
     }
-    # Paired latency only on legitimate requests where both produce a response.
-    legit = df[df.is_legitimate].pivot(index="case_id", columns="architecture", values="latency_ms")
-    if {"prompt_only", "pre_retrieval_acl"}.issubset(legit.columns):
+
+    legit_success = df[df.is_legitimate].pivot(index="case_id", columns="architecture", values="authorized_task_success")
+    if {"prompt_only", "pre_retrieval_acl"}.issubset(legit_success.columns):
+        metrics["paired_tests"]["ARSR_prompt_vs_acl"] = mcnemar_exact(
+            legit_success["prompt_only"], legit_success["pre_retrieval_acl"]
+        )
+
+    # Paired latency only on legitimate requests where both architectures invoke the LLM.
+    legit_latency = df[df.is_legitimate].pivot(index="case_id", columns="architecture", values="latency_ms")
+    if {"prompt_only", "pre_retrieval_acl"}.issubset(legit_latency.columns):
         try:
-            w = wilcoxon(legit["prompt_only"], legit["pre_retrieval_acl"], zero_method="wilcox")
-            metrics["paired_tests"]["latency_prompt_vs_acl"] = {"statistic": float(w.statistic), "p_value": float(w.pvalue)}
+            w = wilcoxon(legit_latency["prompt_only"], legit_latency["pre_retrieval_acl"], zero_method="wilcox")
+            metrics["paired_tests"]["legitimate_latency_prompt_vs_acl"] = {
+                "statistic": float(w.statistic), "p_value": float(w.pvalue)
+            }
         except Exception as e:
-            metrics["paired_tests"]["latency_prompt_vs_acl"] = {"error": str(e)}
+            metrics["paired_tests"]["legitimate_latency_prompt_vs_acl"] = {"error": str(e)}
 
     risk = df[df.architecture == "risk_aware"].copy()
     metrics["risk_aware"]["fuzzy_decisions"] = risk.fuzzy_decision.value_counts(dropna=False).to_dict()
     suspicious = risk[risk.category == "authorized_suspicious"]
     metrics["risk_aware"]["authorized_suspicious_challenge_rate"] = float((suspicious.fuzzy_decision != "ALLOW").mean()) if len(suspicious) else None
+    metrics["risk_aware"]["risk_by_group"] = {
+        "authorized_normal": {
+            "median": float(risk[risk.category == "authorized_normal"].fuzzy_score.median()),
+        },
+        "authorized_suspicious": {
+            "median": float(suspicious.fuzzy_score.median()),
+            "min": float(suspicious.fuzzy_score.min()),
+            "max": float(suspicious.fuzzy_score.max()),
+        },
+        "unauthorized": {
+            "median": float(risk[~risk.is_authorized].fuzzy_score.median()),
+            "min": float(risk[~risk.is_authorized].fuzzy_score.min()),
+            "max": float(risk[~risk.is_authorized].fuzzy_score.max()),
+        },
+    }
 
     (args.outdir / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
 
-    # Architecture summary table.
+    # Architecture summary table. All-request latency is retained for auditability,
+    # but legitimate-path latency is the fair cross-architecture performance measure.
     rows = []
     for arch in ["prompt_only", "pre_retrieval_acl", "risk_aware"]:
         m = metrics[arch]
         rows.append({
             "architecture": arch,
             "UCER": m["UCER"]["rate"],
-            "UDR": m["UDR"]["rate"],
+            "UDR_canary": m["UDR"]["rate"],
             "ARSR": m["ARSR"]["rate"],
             "FRR": m["FRR"]["rate"],
-            "median_latency_ms": m["latency_ms"]["median"],
+            "median_latency_all_ms": m["latency_ms_all_requests"]["median"],
+            "median_latency_legitimate_ms": m["latency_ms_legitimate"]["median"],
         })
     pd.DataFrame(rows).to_csv(args.outdir / "summary.csv", index=False)
 
     # Plot 1: security rates.
-    plot_df = pd.DataFrame(rows).set_index("architecture")[["UCER", "UDR"]]
+    plot_df = pd.DataFrame(rows).set_index("architecture")[["UCER", "UDR_canary"]]
     ax = plot_df.plot(kind="bar", figsize=(7.5, 4.4), rot=0)
     ax.set_ylabel("Rate")
     ax.set_ylim(0, 1.05)
-    ax.set_title("Unauthorized context exposure and disclosure")
+    ax.set_title("Unauthorized context exposure and canary-confirmed disclosure")
     plt.tight_layout()
     plt.savefig(args.outdir / "security_rates.png", dpi=220)
     plt.close()
 
     # Plot 2: prompt-only disclosure by attack category.
     p = df[(df.architecture == "prompt_only") & (~df.is_authorized)]
-    cat = p.groupby("category").agg(UDR=("unauthorized_disclosure", "mean"), UCER=("unauthorized_context_exposure", "mean")).sort_index()
-    ax = cat.plot(kind="bar", figsize=(8.2, 4.6), rot=25)
+    cat = p.groupby("category").agg(
+        n=("case_id", "count"),
+        UDR_canary=("unauthorized_disclosure", "mean"),
+        UCER=("unauthorized_context_exposure", "mean"),
+    ).sort_index()
+    ax = cat[["UDR_canary", "UCER"]].plot(kind="bar", figsize=(8.2, 4.6), rot=25)
     ax.set_ylabel("Rate")
     ax.set_ylim(0, 1.05)
     ax.set_title("Prompt-only baseline by attack category")
@@ -118,6 +153,10 @@ def main():
     plt.savefig(args.outdir / "attack_categories.png", dpi=220)
     plt.close()
     cat.to_csv(args.outdir / "attack_categories.csv")
+
+    # Exact, canary-confirmed prompt-only leak cases for audit/reproduction.
+    leak_cols = ["case_id", "category", "account", "target_alias", "prompt", "retrieved_aliases", "response"]
+    p[p.unauthorized_disclosure][leak_cols].to_csv(args.outdir / "canary_leak_cases.csv", index=False)
 
     print(json.dumps(metrics, indent=2))
 
