@@ -1,0 +1,24 @@
+MODULE main
+VAR
+  state : {LOGIN, AUTHENTICATED, RETRIEVE, LLM_RESPONSE, COMPLETE};
+  acl_ok : boolean;
+  fuzzy : {ALLOW, STEP_UP, DENY};
+ASSIGN
+  init(state) := LOGIN;
+  init(acl_ok) := {TRUE, FALSE};
+  next(acl_ok) := acl_ok;
+  init(fuzzy) := {ALLOW, STEP_UP, DENY};
+  next(fuzzy) := fuzzy;
+  next(state) := case
+    state = LOGIN : AUTHENTICATED;
+    state = AUTHENTICATED : RETRIEVE;
+    state = RETRIEVE : LLM_RESPONSE;
+    state = LLM_RESPONSE : COMPLETE;
+    state = COMPLETE : COMPLETE;
+    TRUE : state;
+  esac;
+
+-- Negative-control properties: P1-P3 must fail for some paths.
+CTLSPEC AG (!acl_ok -> state != RETRIEVE)
+CTLSPEC AG (state = RETRIEVE -> acl_ok)
+CTLSPEC AG ((fuzzy = ALLOW & !acl_ok) -> state != RETRIEVE)
