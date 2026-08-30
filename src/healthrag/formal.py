@@ -32,8 +32,17 @@ def main():
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     print(json.dumps({k: {"returncode": v["returncode"], "specifications": v["specifications"]} for k, v in payload.items()}, indent=2))
-    if payload["secured"]["returncode"] != 0 or not payload["secured"]["specifications"]:
-        raise SystemExit("Secured NuSMV model did not verify successfully")
+
+    secured = payload["secured"]
+    negative = payload["negative_control"]
+    if secured["returncode"] != 0 or not secured["specifications"]:
+        raise SystemExit("Secured NuSMV model did not execute successfully")
+    if not all(s["result"] for s in secured["specifications"]):
+        raise SystemExit("At least one secured NuSMV security property is FALSE")
+    if negative["returncode"] != 0 or not negative["specifications"]:
+        raise SystemExit("Negative-control NuSMV model did not execute successfully")
+    if not any(not s["result"] for s in negative["specifications"]):
+        raise SystemExit("Negative control failed to falsify any security property")
 
 
 if __name__ == "__main__":
