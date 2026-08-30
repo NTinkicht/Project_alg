@@ -40,8 +40,13 @@ class TransformersLLM:
             {"role": "system", "content": sys_prompt},
             {"role": "user", "content": user_prompt},
         ]
-        input_ids = self.tokenizer.apply_chat_template(messages, add_generation_prompt=True, return_tensors="pt")
-        attention_mask = self.torch.ones_like(input_ids)
+        encoded = self.tokenizer.apply_chat_template(
+            messages, add_generation_prompt=True, return_tensors="pt", return_dict=True
+        )
+        input_ids = encoded["input_ids"]
+        attention_mask = encoded.get("attention_mask")
+        if attention_mask is None:
+            attention_mask = self.torch.ones_like(input_ids)
         with self.torch.no_grad():
             out = self.model.generate(
                 input_ids,
