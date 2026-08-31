@@ -2,84 +2,171 @@ name: Research Reproduction
 
 on:
   push:
-    branches: [main]
+    branches: [main, large-benchmark-3000]
   workflow_dispatch:
 
 concurrency:
-  group: healthrag-research-main
+  group: healthrag-research-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
   contents: read
 
+env:
+  TOKENIZERS_PARALLELISM: "false"
+  HF_HUB_DISABLE_TELEMETRY: "1"
+  MODEL_NAME: HuggingFaceTB/SmolLM2-360M-Instruct
+  SHARD_COUNT: "12"
+
 jobs:
-  test-and-experiment:
+  prepare:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
-    env:
-      TOKENIZERS_PARALLELISM: "false"
-      HF_HUB_DISABLE_TELEMETRY: "1"
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
-      - name: Install project and experiment dependencies
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Install project and test dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -e '.[experiment,test]'
-
       - name: Unit and architecture tests
         run: pytest -q
-
-      - name: Prepare pinned Synthea FHIR R4 dataset
+      - name: Checkout pinned Synthea generator
+        uses: actions/checkout@v4
+        with:
+          repository: synthetichealth/synthea
+          ref: v4.0.0
+          path: _synthea
+      - name: Generate 1,000 deterministic Synthea FHIR R4 patients
+        working-directory: _synthea
         run: |
-          python -m healthrag.data
-          python -m healthrag.prompts
-
-      - name: Run empirical LLM experiment
+          ./run_synthea -s 4103 -p 1000 -r 20260101 \
+            --exporter.baseDirectory="$GITHUB_WORKSPACE/data/synthea_generated" \
+            --exporter.fhir.export=true \
+            --exporter.fhir.transaction_bundle=true \
+            --generate.log_patients.detail=none Massachusetts
+      - name: Normalize dataset and generate 3,000-case benchmark
         run: |
-          python -m healthrag.experiment --model HuggingFaceTB/SmolLM2-360M-Instruct
+          python -m healthrag.data --fhir-dir data/synthea_generated/fhir --count 1000
+          python -m healthrag.prompts --count 3000
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          cases=json.loads(Path('data/processed/test_cases.json').read_text())
+          assert len(cases)==3000
+          assert sum(c['is_legitimate'] for c in cases)==1000
+          assert sum(not c['is_authorized'] for c in cases)==1750
+          regression=json.loads(Path('data/processed/regression_cases.json').read_text())
+          assert len(regression)==72 and sum(not c['is_authorized'] for c in regression)==42
+          print('Benchmark manifest validated')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: healthrag-prepared-data
+          path: data/processed/
+          retention-days: 30
 
+  experiment:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install experiment dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[experiment]'
+      - uses: actions/download-artifact@v4
+        with:
+          name: healthrag-prepared-data
+          path: data/processed
+      - name: Run empirical LLM shard
+        run: |
+          python -m healthrag.experiment \
+            --model "$MODEL_NAME" \
+            --shard-index ${{ matrix.shard }} \
+            --num-shards "$SHARD_COUNT" \
+            --out artifacts/shard_${{ matrix.shard }}.csv
+      - uses: actions/upload-artifact@v4
+        with:
+          name: healthrag-shard-${{ matrix.shard }}
+          path: artifacts/shard_${{ matrix.shard }}.csv
+          retention-days: 30
+
+  analyze-and-verify:
+    needs: experiment
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install analysis dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[experiment,test]'
+      - uses: actions/download-artifact@v4
+        with:
+          name: healthrag-prepared-data
+          path: data/processed
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: healthrag-shard-*
+          path: artifacts/shards
+          merge-multiple: true
+      - name: Merge and validate empirical shards
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import pandas as pd
+          files=sorted(Path('artifacts/shards').glob('shard_*.csv'))
+          assert len(files)==12, files
+          df=pd.concat([pd.read_csv(p) for p in files], ignore_index=True)
+          assert len(df)==9000, len(df)
+          assert df.case_id.nunique()==3000
+          counts=df.groupby('architecture').size().to_dict()
+          assert counts=={'pre_retrieval_acl':3000,'prompt_only':3000,'risk_aware':3000}, counts
+          df.sort_values(['case_id','architecture']).to_csv('artifacts/results.csv', index=False)
+          print(counts)
+          PY
       - name: Analyze empirical results
         run: python -m healthrag.analysis
-
       - name: Download and validate NuSMV 2.7.1
         run: |
           sudo apt-get update
           sudo apt-get install -y libedit2 patchelf
           curl -fL --retry 3 -o /tmp/nusmv.tar.xz https://nusmv.fbk.eu/distrib/2.7.1/NuSMV-2.7.1-linux64.tar.xz
-          mkdir -p /tmp/nusmv
-          tar -xf /tmp/nusmv.tar.xz -C /tmp/nusmv
+          mkdir -p /tmp/nusmv && tar -xf /tmp/nusmv.tar.xz -C /tmp/nusmv
           NUSMV=$(find /tmp/nusmv -type f -name NuSMV | head -1)
           chmod +x "$NUSMV"
           NUSMV_ROOT=$(dirname "$(dirname "$NUSMV")")
-          NUSMV_LIB="$NUSMV_ROOT/lib"
-          export LD_LIBRARY_PATH="$NUSMV_LIB:${LD_LIBRARY_PATH:-}"
-          echo "NuSMV executable: $NUSMV"
-          echo "Bundled library directory: $NUSMV_LIB"
-          if ldd "$NUSMV" 2>&1 | grep -q 'libedit.so.0 => not found'; then
-            echo "NuSMV upstream binary expects legacy libedit.so.0; mapping it to Ubuntu libedit.so.2"
-            patchelf --replace-needed libedit.so.0 libedit.so.2 "$NUSMV"
-          fi
-          ldd "$NUSMV"
+          export LD_LIBRARY_PATH="$NUSMV_ROOT/lib:${LD_LIBRARY_PATH:-}"
+          if ldd "$NUSMV" 2>&1 | grep -q 'libedit.so.0 => not found'; then patchelf --replace-needed libedit.so.0 libedit.so.2 "$NUSMV"; fi
           echo "NUSMV=$NUSMV" >> "$GITHUB_ENV"
           echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
           set +e
           "$NUSMV" -h >/tmp/nusmv_help.txt 2>&1
-          HELP_RC=$?
+          RC=$?
           set -e
-          if [ "$HELP_RC" -ne 0 ] && [ "$HELP_RC" -ne 2 ]; then
-            cat /tmp/nusmv_help.txt
-            exit "$HELP_RC"
-          fi
+          test "$RC" -eq 0 -o "$RC" -eq 2
           grep -q 'NuSMV 2.7.1' /tmp/nusmv_help.txt
-
       - name: Formal verification
         run: python -m healthrag.formal --nusmv "$NUSMV"
-
       - name: Collect reproducibility metadata
         if: always()
         run: |
@@ -87,39 +174,32 @@ jobs:
           import json, os, platform, sys
           from pathlib import Path
           import torch, transformers, sklearn, scipy, pandas
-          from healthrag.data import SYNTHEA_SAMPLE_COMMIT
-          meta = {
-              "repository_commit": os.environ.get("GITHUB_SHA"),
-              "python": sys.version,
-              "platform": platform.platform(),
-              "torch": torch.__version__,
-              "transformers": transformers.__version__,
-              "sklearn": sklearn.__version__,
-              "scipy": scipy.__version__,
-              "pandas": pandas.__version__,
-              "model": "HuggingFaceTB/SmolLM2-360M-Instruct",
-              "decoding": "greedy/do_sample=False",
-              "max_new_tokens": 64,
-              "synthea_sample_commit": SYNTHEA_SAMPLE_COMMIT,
-              "prompt_count": 72,
-              "architectures": ["prompt_only", "pre_retrieval_acl", "risk_aware"],
-              "nusmv_version": "2.7.1",
-              "nusmv_ubuntu_compatibility": "upstream libedit.so.0 dependency mapped to libedit.so.2 with patchelf when required",
-          }
-          Path("artifacts").mkdir(exist_ok=True)
-          Path("artifacts/reproducibility.json").write_text(json.dumps(meta, indent=2))
+          from healthrag.data import SYNTHEA_GENERATOR_VERSION, SYNTHEA_GENERATOR_SEED, SYNTHEA_REFERENCE_DATE
+          meta={
+            'repository_commit':os.environ.get('GITHUB_SHA'),'python':sys.version,'platform':platform.platform(),
+            'torch':torch.__version__,'transformers':transformers.__version__,'sklearn':sklearn.__version__,
+            'scipy':scipy.__version__,'pandas':pandas.__version__,'model':os.environ['MODEL_NAME'],
+            'decoding':'greedy/do_sample=False','max_new_tokens':64,'patient_count':1000,'prompt_count':3000,
+            'architecture_executions':9000,'shards':12,'synthea_version':SYNTHEA_GENERATOR_VERSION,
+            'synthea_seed':SYNTHEA_GENERATOR_SEED,'synthea_reference_date':SYNTHEA_REFERENCE_DATE,
+            'architectures':['prompt_only','pre_retrieval_acl','risk_aware'],'nusmv_version':'2.7.1'}
+          Path('artifacts').mkdir(exist_ok=True)
+          Path('artifacts/reproducibility.json').write_text(json.dumps(meta,indent=2))
           PY
-
-      - name: Upload research artifacts
+      - uses: actions/upload-artifact@v4
         if: always()
-        uses: actions/upload-artifact@v4
         with:
-          name: healthrag-research-artifacts
+          name: healthrag-research-artifacts-3000
           path: |
-            artifacts/
+            artifacts/results.csv
+            artifacts/analysis/
+            artifacts/formal/
+            artifacts/reproducibility.json
             data/processed/authorization.json
             data/processed/protected_pool.json
             data/processed/test_cases.json
+            data/processed/regression_cases.json
+            data/processed/dataset_manifest.json
             formal/secured.smv
             formal/negative_control.smv
           retention-days: 30
