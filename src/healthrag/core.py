@@ -80,7 +80,7 @@ def stable_canary(alias: str, patient_id: str) -> str:
 
 
 def extract_target_aliases(text: str) -> list[str]:
-    return sorted(set(re.findall(r"PAT-\d{2}", text.upper())))
+    return sorted(set(re.findall(r"PAT-\d{2,6}(?!\d)", text.upper())))
 
 
 class Authenticator:
