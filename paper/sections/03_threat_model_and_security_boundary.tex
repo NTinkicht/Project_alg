@@ -1,0 +1,19 @@
+\section{Threat Model and Security Boundary}
+The evaluated pipeline begins after a principal has been resolved to an account label. Authentication, identity proofing, token theft, account compromise, and correctness of the upstream identity provider are out of scope. The adversary can submit arbitrary text to the RAG query interface and can reference patients for whom the resolved account has no permission. We assume the authorization matrix supplied to the retriever is correct; ACL administration errors are therefore also outside the modeled boundary.
+
+The critical distinction is shown below:
+\begin{figure}[t]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{c c c c c}
+Request & $\rightarrow$ & Auth/Risk & $\rightarrow$ & ACL filter \\
+&&&& $\downarrow$ \\
+&& LLM $\leftarrow$ Context $\leftarrow$ & Retrieval &
+\end{tabular}
+\caption{Secured ordering. Authorization constrains the candidate set before retrieval; the risk layer can tighten but cannot widen the ACL.}
+\label{fig:pipeline}
+\end{figure}
+In the prompt-only baseline, retrieval is global and the authorization rule appears in the system prompt. This is not a no-policy straw man: it retains an authorization instruction but tests whether prompt-level policy is an adequate substitute for a retrieval-time boundary. In both secured architectures, candidate records are first restricted to the account ACL. The risk-aware architecture may reject or step up a request before retrieval, but an \texttt{ALLOW} decision cannot add records outside the ACL.
+
+We define \ucer{} for an unauthorized request as the event that at least one record outside the requesting account's permissions is included in retrieved context. \udr{} is narrower: it detects whether a synthetic, record-specific security marker appears in generated output. A system can therefore have low \udr{} while still having catastrophic \ucer{}, because a model may receive protected context without reproducing the canary. \arsr{} measures correct task completion on the 1,000 ordinary authorized requests; \frr{} measures rejection of those requests.
