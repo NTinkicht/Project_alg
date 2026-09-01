@@ -19,6 +19,7 @@ def main():
     ap.add_argument("--records", type=Path, default=Path("data/scale/records_100k.json"))
     ap.add_argument("--cases", type=Path, default=Path("data/scale/test_cases.json"))
     ap.add_argument("--fixed-auth", type=Path, default=Path("data/scale/authorization_fixed.json"))
+    ap.add_argument("--scale-dir", type=Path, default=Path("data/scale"))
     ap.add_argument("--model", default="HuggingFaceTB/SmolLM2-360M-Instruct")
     ap.add_argument("--queries", type=int, default=90)
     ap.add_argument("--shard-index", type=int, default=0)
@@ -40,18 +41,22 @@ def main():
     rows = []
     for ci, case in enumerate(selected, 1):
         for scale in SCALES:
+            proportional_map = json.loads((args.scale_dir / f"authorization_proportional_{scale}.json").read_text())
+            proportional_acl = AuthorizationMatrix(proportional_map)
             global_indices = np.arange(scale, dtype=np.int32)
             fixed_indices = index.indices_for_aliases(fixed_acl.allowed(case.account), scale)
+            proportional_indices = index.indices_for_aliases(proportional_acl.allowed(case.account), scale)
             retrievals = {
-                "unfiltered": index.retrieve_metrics(case.prompt, case.target_alias or "", global_indices, k=2),
-                "acl_fixed": index.retrieve_metrics(case.prompt, case.target_alias or "", fixed_indices, k=2),
-                "target_fixed": index.target_scoped_metrics(case.target_alias or "", fixed_acl.allowed(case.account), scale),
+                "unfiltered": (index.retrieve_metrics(case.prompt, case.target_alias or "", global_indices, k=2), fixed_acl),
+                "acl_fixed": (index.retrieve_metrics(case.prompt, case.target_alias or "", fixed_indices, k=2), fixed_acl),
+                "acl_proportional": (index.retrieve_metrics(case.prompt, case.target_alias or "", proportional_indices, k=2), proportional_acl),
+                "target_fixed": (index.target_scoped_metrics(case.target_alias or "", fixed_acl.allowed(case.account), scale), fixed_acl),
             }
-            for mode, r in retrievals.items():
+            for mode, (r, policy_acl) in retrievals.items():
                 retrieved = [records[index.alias_to_index[a]] for a in r["retrieved_aliases"]]
                 context = build_context(retrieved)
                 started = time.perf_counter()
-                response = llm.generate(system_prompt(case.account, fixed_acl.allowed(case.account), context), case.prompt)
+                response = llm.generate(system_prompt(case.account, policy_acl.allowed(case.account), context), case.prompt)
                 generation_ms = (time.perf_counter() - started) * 1000
                 success = authorized_task_success(response, case.expected_fact, False)
                 rows.append({
@@ -60,6 +65,9 @@ def main():
                     "target_alias": case.target_alias,
                     "scale": scale,
                     "mode": mode,
+                    "authorization_scope": "proportional" if mode == "acl_proportional" else "fixed",
+                    "authorized_candidate_count": len(policy_acl.allowed(case.account)),
+                    "authorization_density": len(policy_acl.allowed(case.account)) / float(scale),
                     "retrieved_aliases": r["retrieved_aliases"],
                     "target_rank": r["target_rank"],
                     "best_distractor_score": r["best_distractor_score"],
