@@ -37,11 +37,7 @@ def cluster_bootstrap_difference(
     n_boot: int = 10000,
     seed: int = 4103,
 ) -> dict:
-    """Cluster bootstrap CI for a mean paired difference.
-
-    Entire prompt-template clusters are resampled, preserving within-template
-    dependence and avoiding case-level pseudoreplication.
-    """
+    """Cluster bootstrap CI for a mean paired difference."""
     d = diffs[[cluster_col, value_col]].dropna().copy()
     clusters = list(d[cluster_col].unique())
     if not clusters:
@@ -71,10 +67,7 @@ def cluster_sign_permutation(
     n_perm: int = 20000,
     seed: int = 4103,
 ) -> dict:
-    """Two-sided paired randomization test with signs permuted by template.
-
-    This treats template, not repeated case wording, as the exchangeability unit.
-    """
+    """Two-sided paired randomization test with signs permuted by template."""
     d = diffs[[cluster_col, value_col]].dropna().copy()
     clusters = list(d[cluster_col].unique())
     if not clusters:
@@ -129,15 +122,27 @@ def _fuzzy_from_features(auth_conf: float, inj: float, sens: float, trust: float
 
 
 def risk_feature_ablation(cases: list[TestCase], acl: AuthorizationMatrix) -> pd.DataFrame:
-    """Zero one fuzzy-controller feature at a time and recompute decisions offline."""
+    """Neutralize one risk contribution at a time and recompute decisions offline.
+
+    Low injection/sensitivity and high authorization-confidence/trust are the
+    directionally benign values, so neutralization removes a feature's ability
+    to increase risk without creating the artificial risk spike caused by
+    setting confidence or trust to zero.
+    """
+    neutral = {
+        "authorization_confidence": 1.0,
+        "injection_risk": 0.0,
+        "sensitivity": 0.0,
+        "trust": 1.0,
+    }
+    index = {"authorization_confidence": 0, "injection_risk": 1, "sensitivity": 2, "trust": 3}
     rows = []
     for case in cases:
         base = FuzzyRiskController.feature_values(case.account, case.prompt, acl, case.session_trust)
-        for ablation in ["none", "authorization_confidence", "injection_risk", "sensitivity", "trust"]:
+        for ablation in ["none", *neutral.keys()]:
             x = list(base)
             if ablation != "none":
-                idx = {"authorization_confidence": 0, "injection_risk": 1, "sensitivity": 2, "trust": 3}[ablation]
-                x[idx] = 0.0
+                x[index[ablation]] = neutral[ablation]
             score, decision = _fuzzy_from_features(*x)
             rows.append({
                 "case_id": case.case_id,
@@ -165,7 +170,6 @@ def main():
     df["template_cluster"] = df["prompt"].map(template_cluster)
     metrics: dict[str, object] = {}
 
-    # Cluster-aware paired ARSR analysis on legitimate requests.
     legit = df[df["is_legitimate"].astype(str).str.lower().eq("true")].copy()
     p = legit.pivot(index=["case_id", "template_cluster"], columns="architecture", values="authorized_task_success").reset_index()
     if {"prompt_only", "pre_retrieval_acl"}.issubset(p.columns):
