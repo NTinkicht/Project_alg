@@ -1,0 +1,32 @@
+\section{Implications for Secure RAG Design}
+The results suggest a layered design in which each mechanism has a distinct responsibility. Collapsing those responsibilities into a single ``safety'' score makes both engineering and evaluation harder.
+
+\textbf{1) Make authorization a data-plane constraint.} The retriever should receive an already constrained candidate set, or enforce an equivalent metadata predicate inside the query engine. The security invariant is not that the model was \emph{told} about permissions, but that no document outside the resolved principal's policy can be selected. This implies that retrieval logs should record the principal, policy version, candidate-scope identifier, and retrieved document identifiers before generation begins. Such logging provides a directly auditable counterpart to \ucer{} and makes authorization failures observable without inspecting generated prose.
+
+\textbf{2) Keep target resolution inside the authorized namespace.} Alias-free testing shows that a query need not contain the canonical identifier for the system to remain safe: resolution can operate over the principal's authorized candidate pool. In production, entity linking, spelling correction, aliases, and demographic disambiguation should therefore resolve \emph{after} policy scoping, or return candidate identifiers to a policy check before retrieval. A resolver that searches globally and only later checks the selected entity can recreate the same boundary problem as prompt-only authorization.
+
+\textbf{3) Treat risk scoring as an operational control.} The held-out paraphrase result argues against assigning confidentiality guarantees to lexical or hand-crafted suspicion scores. Risk signals remain useful for rate limiting, step-up authentication, analyst review, or choosing a more restrictive answer policy. However, their failure should degrade into a normal authorized request, not into broader data access. The correct composition rule is monotonic: risk may remove capabilities or require additional assurance, but it may not add records to the ACL-approved set.
+
+\textbf{4) Separate retrieval quality from policy quality.} The $k=1$ control shows how easily a retrieval-composition change can masquerade as a security--utility trade-off. Evaluation pipelines should therefore retain retrieved identifiers and target ranks, not only final answers. When two architectures differ in answer quality, investigators can first determine whether they received the same evidence. This is especially important in small-model evaluations, where one additional distractor can change an otherwise deterministic answer.
+
+\textbf{5) Report scale in terms of both corpus size and entitlement size.} A 100K datastore does not imply a 100K search for every principal. Fixed-scope and proportional-scope conditions represent different deployment regimes. Systems papers should therefore report the size of the global corpus, the authorized candidate pool, and any target-scoped subquery separately. Our proportional condition shows that authorization filtering itself becomes more expensive as entitlements grow, while the global condition shows the larger cost of searching everything. These are operational findings, not changes in the logical meaning of authorization.
+
+\begin{table}[t]
+\caption{Evidence-to-design mapping.}
+\label{tab:implications}
+\centering
+\scriptsize
+\begin{tabular}{p{0.24\columnwidth}p{0.27\columnwidth}p{0.28\columnwidth}}
+\toprule
+Observed result & Design implication & Claim boundary \\
+\midrule
+0/1,750 secured \ucer{} & Scope candidates before retrieval & Under correct ACL/principal \\
+5/1,750 baseline \udr{} & Do not infer safety from output alone & Canary detector is narrow \\
+$k=1$ ARSR convergence & Control evidence composition & Benchmark-specific causal result \\
+Held-out risk collapse & Keep heuristic risk subordinate & No detector-generalization claim \\
+Proportional latency growth & Report entitlement size at scale & Retrieval-side, not LLM utility \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+These principles also suggest a monitoring split. Security monitoring should track unauthorized retrieval attempts, policy-evaluation failures, and boundary violations as hard events. Model-quality monitoring should track target rank, context composition, answer success, and refusals. Risk-monitoring should track challenge rates and calibration drift. Keeping these telemetry streams distinct avoids a common failure mode in which a model refusal is counted as evidence that unauthorized data were never retrieved.
