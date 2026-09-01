@@ -154,7 +154,7 @@ def _summarize(df: pd.DataFrame, index: ScaleIndex) -> tuple[pd.DataFrame, dict]
 
     # Paired scale comparisons for the key unfiltered and fixed-ACL modes.
     for mode in ["unfiltered", "acl_fixed", "acl_proportional"]:
-        d = df[df.mode == mode]
+        d = df[df["mode"] == mode]
         pivot_latency = d.pivot(index="case_id", columns="scale", values="retrieval_ms")
         pivot_distractor = d.pivot(index="case_id", columns="scale", values="best_distractor_score")
         block = {}
@@ -175,7 +175,7 @@ def _summarize(df: pd.DataFrame, index: ScaleIndex) -> tuple[pd.DataFrame, dict]
         per_case_slope = []
         for _, g in d.groupby("case_id"):
             if len(g) == 3:
-                rho, _ = spearmanr(g.scale.astype(float), g.retrieval_ms.astype(float))
+                rho, _ = spearmanr(g["scale"].astype(float), g["retrieval_ms"].astype(float))
                 if np.isfinite(rho): per_case_slope.append(float(rho))
         block["median_per_case_spearman_scale_latency"] = float(np.median(per_case_slope)) if per_case_slope else None
         stats[mode] = block
