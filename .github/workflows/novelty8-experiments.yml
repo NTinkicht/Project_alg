@@ -1,0 +1,327 @@
+name: Novelty-8 Strengthening Experiments
+
+on:
+  push:
+    branches: [novelty-8-structural-heuristic]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  HF_HUB_DISABLE_TELEMETRY: "1"
+  TOKENIZERS_PARALLELISM: "false"
+  BASE_RESEARCH_RUN: "33523950201"
+  BASE_SCALE_RUN: "33523949995"
+  SECOND_MODEL: "Qwen/Qwen2.5-0.5B-Instruct"
+  JUDGE_MODEL: "Qwen/Qwen2.5-1.5B-Instruct"
+  PRIMARY_SHARDS: "12"
+
+jobs:
+  offline-novelty:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[novelty8-run]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -e '.[test]'
+      - name: Download authoritative prepared data and baseline results
+        run: |
+          gh run download "$BASE_RESEARCH_RUN" -n healthrag-revision-prepared-data -D data/processed
+          gh run download "$BASE_RESEARCH_RUN" -n healthrag-audit-revision-artifacts -D baseline
+      - name: Cluster-aware inference and feature ablations
+        run: |
+          python -m healthrag.novelty_analysis \
+            --results baseline/artifacts/results.csv \
+            --auth data/processed/authorization.json \
+            --cases data/processed/test_cases.json \
+            --heldout data/processed/heldout_cases.json \
+            --outdir artifacts/novelty
+      - name: Adaptive heuristic-evasion attack
+        run: |
+          python -m healthrag.adaptive_attack \
+            --records data/processed/records.json \
+            --auth data/processed/authorization.json \
+            --cases data/processed/test_cases.json \
+            --outdir artifacts/adaptive_attack
+      - uses: actions/upload-artifact@v4
+        with:
+          name: novelty8-offline
+          path: |
+            artifacts/novelty/
+            artifacts/adaptive_attack/
+          retention-days: 30
+
+  semantic-judge:
+    needs: offline-novelty
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -e '.[experiment]'
+      - uses: actions/download-artifact@v4
+        with:
+          name: novelty8-offline
+          path: artifacts
+      - name: Independent semantic-equivalence judgments
+        run: |
+          python -m healthrag.semantic_judge \
+            --model "$JUDGE_MODEL" \
+            --adaptive-csv artifacts/adaptive_attack/adaptive_evasion.csv \
+            --adaptive-per-category 20 \
+            --outdir artifacts/semantic_judge
+      - uses: actions/upload-artifact@v4
+        with:
+          name: novelty8-semantic-judge
+          path: artifacts/semantic_judge/
+          retention-days: 30
+
+  reproducibility-rerun:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[novelty8-run]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -e '.[experiment]'
+      - name: Download prepared data and original shard zero
+        run: |
+          gh run download "$BASE_RESEARCH_RUN" -n healthrag-revision-prepared-data -D data/processed
+          gh run download "$BASE_RESEARCH_RUN" -n healthrag-primary-0 -D baseline_shard
+      - name: Repeat exact greedy shard
+        run: |
+          python -m healthrag.experiment \
+            --model HuggingFaceTB/SmolLM2-360M-Instruct \
+            --shard-index 0 --num-shards "$PRIMARY_SHARDS" \
+            --out artifacts/repro_primary_0.csv
+      - name: Compare response bytes and deterministic fields
+        run: |
+          python - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          import pandas as pd
+          old=pd.read_csv('baseline_shard/primary_0.csv').sort_values(['case_id','architecture']).reset_index(drop=True)
+          new=pd.read_csv('artifacts/repro_primary_0.csv').sort_values(['case_id','architecture']).reset_index(drop=True)
+          assert list(old[['case_id','architecture']].itertuples(index=False,name=None)) == list(new[['case_id','architecture']].itertuples(index=False,name=None))
+          old_bytes='\n'.join(old.response.fillna('').astype(str)).encode('utf-8')
+          new_bytes='\n'.join(new.response.fillna('').astype(str)).encode('utf-8')
+          fields=['retrieved_aliases','response','unauthorized_context_exposure','unauthorized_disclosure','authorized_task_success','rejected','fuzzy_decision']
+          equal={f: bool(old[f].fillna('').astype(str).equals(new[f].fillna('').astype(str))) for f in fields}
+          payload={
+            'n_rows':len(old),
+            'response_bytes_identical':old_bytes==new_bytes,
+            'old_response_sha256':hashlib.sha256(old_bytes).hexdigest(),
+            'new_response_sha256':hashlib.sha256(new_bytes).hexdigest(),
+            'deterministic_field_equality':equal,
+          }
+          Path('artifacts/repro_exact.json').write_text(json.dumps(payload,indent=2))
+          print(json.dumps(payload,indent=2))
+          assert payload['response_bytes_identical'] and all(equal.values())
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: novelty8-reproducibility
+          path: |
+            artifacts/repro_exact.json
+            artifacts/repro_primary_0.csv
+          retention-days: 30
+
+  proportional-scale-llm:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[novelty8-run]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2]
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -e '.[experiment]'
+      - name: Download authoritative 100K scale corpus
+        run: gh run download "$BASE_SCALE_RUN" -n healthrag-scale-corpus-100k -D .
+      - name: Run only missing proportional ACL LLM cell
+        run: |
+          python -m healthrag.scale_llm \
+            --model HuggingFaceTB/SmolLM2-360M-Instruct \
+            --queries 90 --shard-index ${{ matrix.shard }} --num-shards 3 \
+            --modes acl_proportional \
+            --out artifacts/scale_proportional_${{ matrix.shard }}.csv
+      - uses: actions/upload-artifact@v4
+        with:
+          name: novelty8-scale-proportional-${{ matrix.shard }}
+          path: artifacts/scale_proportional_${{ matrix.shard }}.csv
+          retention-days: 30
+
+  qwen-primary:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[novelty8-run]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -e '.[experiment]'
+      - run: gh run download "$BASE_RESEARCH_RUN" -n healthrag-revision-prepared-data -D data/processed
+      - name: Run second-model primary shard
+        run: |
+          python -m healthrag.experiment \
+            --model "$SECOND_MODEL" \
+            --shard-index ${{ matrix.shard }} --num-shards "$PRIMARY_SHARDS" \
+            --out artifacts/qwen_primary_${{ matrix.shard }}.csv
+      - uses: actions/upload-artifact@v4
+        with:
+          name: novelty8-qwen-primary-${{ matrix.shard }}
+          path: artifacts/qwen_primary_${{ matrix.shard }}.csv
+          retention-days: 30
+
+  qwen-controlled-k1:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[novelty8-run]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -e '.[experiment]'
+      - run: gh run download "$BASE_RESEARCH_RUN" -n healthrag-revision-prepared-data -D data/processed
+      - name: Run second-model controlled k=1 shard
+        run: |
+          python -m healthrag.experiment \
+            --model "$SECOND_MODEL" --legitimate-only --retrieval-k 1 \
+            --shard-index ${{ matrix.shard }} --num-shards 6 \
+            --out artifacts/qwen_controlled_${{ matrix.shard }}.csv
+      - uses: actions/upload-artifact@v4
+        with:
+          name: novelty8-qwen-controlled-${{ matrix.shard }}
+          path: artifacts/qwen_controlled_${{ matrix.shard }}.csv
+          retention-days: 30
+
+  qwen-heldout:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[novelty8-run]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2]
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -e '.[experiment]'
+      - run: gh run download "$BASE_RESEARCH_RUN" -n healthrag-revision-prepared-data -D data/processed
+      - name: Run second-model held-out shard
+        run: |
+          python -m healthrag.experiment \
+            --model "$SECOND_MODEL" --cases data/processed/heldout_cases.json \
+            --shard-index ${{ matrix.shard }} --num-shards 3 \
+            --out artifacts/qwen_heldout_${{ matrix.shard }}.csv
+      - uses: actions/upload-artifact@v4
+        with:
+          name: novelty8-qwen-heldout-${{ matrix.shard }}
+          path: artifacts/qwen_heldout_${{ matrix.shard }}.csv
+          retention-days: 30
+
+  aggregate:
+    needs: [offline-novelty, semantic-judge, reproducibility-rerun, proportional-scale-llm, qwen-primary, qwen-controlled-k1, qwen-heldout]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -e '.[test]'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: novelty8-qwen-primary-*
+          path: gathered/primary
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: novelty8-qwen-controlled-*
+          path: gathered/controlled
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: novelty8-qwen-heldout-*
+          path: gathered/heldout
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: novelty8-scale-proportional-*
+          path: gathered/scale
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: novelty8-offline
+          path: gathered/offline
+      - uses: actions/download-artifact@v4
+        with:
+          name: novelty8-semantic-judge
+          path: gathered/semantic
+      - uses: actions/download-artifact@v4
+        with:
+          name: novelty8-reproducibility
+          path: gathered/repro
+      - name: Merge shards and summarize second-model replication
+        run: |
+          python - <<'PY'
+          import pandas as pd
+          from pathlib import Path
+          Path('artifacts/novelty8').mkdir(parents=True,exist_ok=True)
+          for src,name in [('gathered/primary','qwen_primary.csv'),('gathered/controlled','qwen_controlled_k1.csv'),('gathered/heldout','qwen_heldout.csv'),('gathered/scale','scale_acl_proportional.csv')]:
+              files=sorted(Path(src).glob('*.csv'))
+              assert files, (src, files)
+              pd.concat([pd.read_csv(f) for f in files],ignore_index=True).to_csv(Path('artifacts/novelty8')/name,index=False)
+          PY
+          python -m healthrag.replication_analysis \
+            --primary artifacts/novelty8/qwen_primary.csv \
+            --controlled artifacts/novelty8/qwen_controlled_k1.csv \
+            --heldout artifacts/novelty8/qwen_heldout.csv \
+            --model "$SECOND_MODEL" \
+            --out artifacts/novelty8/qwen_replication_metrics.json
+          cp -r gathered/offline/* artifacts/novelty8/
+          cp -r gathered/semantic/* artifacts/novelty8/
+          cp -r gathered/repro/* artifacts/novelty8/
+          sha256sum artifacts/novelty8/* > artifacts/novelty8/SHA256SUMS.txt || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: novelty8-complete-results
+          path: artifacts/novelty8/
+          retention-days: 30
