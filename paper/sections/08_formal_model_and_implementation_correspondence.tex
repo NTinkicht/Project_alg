@@ -1,0 +1,23 @@
+\section{Formal Model and Implementation Correspondence}
+We model the secured ordering as a finite-state machine with states for login, authenticated processing, risk check, ACL check, retrieval, LLM response, denial, and completion. NuSMV 2.7.1 verifies seven CTL properties: authentication failure cannot reach protected processing; ACL denial cannot reach retrieval; retrieval implies authentication and ACL authorization; fuzzy \texttt{ALLOW} cannot override ACL denial; risk \texttt{DENY} transitions to a safe terminal state; valid authenticated/authorized/non-denied requests eventually complete; and authentication failure at login immediately denies. All seven properties hold in the secured abstraction. A deliberately vulnerable model without these gates falsifies all four corresponding safety properties and produces counterexamples.
+
+\begin{table}[t]
+\caption{Formal-to-implementation correspondence.}
+\label{tab:formal}
+\centering
+\scriptsize
+\begin{tabular}{p{0.07\columnwidth}p{0.31\columnwidth}p{0.43\columnwidth}}
+\toprule
+Prop. & Abstract guarantee & Executable correspondence \\
+\midrule
+P1/P7 & Auth failure cannot proceed & Authentication-gating unit paths \\
+P2 & ACL deny never retrieves & Denied request returns before retriever \\
+P3 & Retrieval implies ACL subset & Retrieved aliases asserted subset of ACL \\
+P4 & Fuzzy ALLOW cannot widen ACL & ALLOW path still receives ACL candidates \\
+P5 & Risk DENY stops before retrieval & DENY path asserts no retrieval \\
+P6 & Valid path reaches generation & Authorized, non-denied path reaches LLM \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The correspondence tests are example-based executable checks, not an exhaustive proof of Python implementation correctness. The exhaustive statement applies only to the finite NuSMV abstraction under its assumptions. The combination improves traceability between the model and code but should not be read as formal verification of the entire software stack.
