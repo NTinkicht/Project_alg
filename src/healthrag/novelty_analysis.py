@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import ast
 import json
 from pathlib import Path
 import re
@@ -39,11 +38,7 @@ def _paired_bootstrap(a: pd.Series, b: pd.Series, draws: int = 20000, seed: int 
 
 
 def _cluster_bootstrap(paired: pd.DataFrame, cluster_col: str, first: str, second: str, draws: int = 20000, seed: int = 4103) -> dict:
-    """Cluster bootstrap of the mean paired difference.
-
-    Whole prompt templates, not individual instantiations, are resampled.  This
-    directly addresses pseudoreplication from repeated target substitution.
-    """
+    """Cluster bootstrap of the mean paired difference at prompt-template level."""
     clusters = list(paired[cluster_col].dropna().unique())
     if not clusters:
         return {"difference": None, "ci95": [None, None], "clusters": 0, "draws": draws}
@@ -53,15 +48,14 @@ def _cluster_bootstrap(paired: pd.DataFrame, cluster_col: str, first: str, secon
     estimates = np.empty(draws, dtype=float)
     for i in range(draws):
         sampled = rng.choice(clusters, size=len(clusters), replace=True)
-        parts = [by_cluster[c] for c in sampled]
-        d = pd.concat(parts, ignore_index=True)
+        d = pd.concat([by_cluster[c] for c in sampled], ignore_index=True)
         estimates[i] = float((d[second].astype(float) - d[first].astype(float)).mean())
     lo, hi = np.quantile(estimates, [0.025, 0.975])
     return {"difference": observed, "ci95": [float(lo), float(hi)], "clusters": len(clusters), "draws": draws}
 
 
 def _template_sign_test(paired: pd.DataFrame, cluster_col: str, first: str, second: str) -> dict:
-    grouped = paired.groupby(cluster_col).apply(lambda d: float((d[second].astype(float) - d[first].astype(float)).mean()), include_groups=False)
+    grouped = paired.groupby(cluster_col).apply(lambda d: float((d[second].astype(float) - d[first].astype(float)).mean()))
     nonzero = grouped[grouped != 0]
     positive = int((nonzero > 0).sum()); negative = int((nonzero < 0).sum()); n = positive + negative
     p = 1.0 if n == 0 else float(binomtest(min(positive, negative), n, 0.5, alternative="two-sided").pvalue)
@@ -102,8 +96,7 @@ def main() -> None:
     ap.add_argument("--qwen-adaptive", type=Path, required=True)
     ap.add_argument("--risk-ablation", type=Path, required=True)
     ap.add_argument("--adaptive-pairs", type=Path, required=True)
-    ap.add_argument("--scale-old", type=Path, required=True)
-    ap.add_argument("--scale-proportional", type=Path, required=True)
+    ap.add_argument("--scale-complete", type=Path, required=True)
     ap.add_argument("--scale-retrieval-summary", type=Path, required=True)
     ap.add_argument("--outdir", type=Path, default=Path("artifacts/novelty8"))
     args = ap.parse_args()
@@ -151,7 +144,8 @@ def main() -> None:
         cp = controlled.pivot(index="case_id", columns="architecture", values="authorized_task_success")
         metrics["models"][model]["controlled_k1_acl_minus_prompt_bootstrap"] = _paired_bootstrap(cp["prompt_only"], cp["pre_retrieval_acl"])
 
-    # Cluster-aware security inference for the authoritative SmolLM2 primary run.
+    # Cluster-aware inference treats the prompt template, not each target
+    # substitution, as the resampling/sign-test unit.
     unauth = smol_primary[~smol_primary.is_authorized].copy()
     unauth["template"] = unauth.prompt.map(_template)
     for metric in ["unauthorized_context_exposure", "unauthorized_disclosure"]:
@@ -163,7 +157,7 @@ def main() -> None:
             "template_sign_test_acl_minus_prompt": _template_sign_test(paired, "template", "prompt_only", "pre_retrieval_acl"),
         }
 
-    # Heuristic Detection Retention (HDR) from no-ablation fuzzy decisions.
+    # Heuristic Detection Retention (HDR) from the unablated fuzzy controller.
     ablation = pd.read_csv(args.risk_ablation)
     if ablation["challenged"].dtype != bool:
         ablation["challenged"] = ablation["challenged"].astype(str).str.lower().eq("true")
@@ -183,7 +177,6 @@ def main() -> None:
         "HDR_adaptive_over_primary": (rates["adaptive"] / base if base else None),
     }
 
-    # Evasion effectiveness from paired original/adaptive lexical objectives.
     pairs = json.loads(args.adaptive_pairs.read_text())
     reductions = []
     zeroed = 0
@@ -198,29 +191,28 @@ def main() -> None:
         "fraction_with_zero_final_injection_risk": zeroed / len(pairs) if pairs else None,
     }
 
-    # Complete scale-LLM matrix by combining old 810 rows with the new
-    # proportional-ACL condition (270 rows).
-    old_scale = pd.read_csv(args.scale_old)
-    proportional = pd.read_csv(args.scale_proportional)
-    combined = pd.concat([old_scale, proportional], ignore_index=True)
-    if combined["authorized_task_success"].dtype != bool:
-        combined["authorized_task_success"] = combined["authorized_task_success"].astype(str).str.lower().eq("true")
-    assert len(combined) == 1080, len(combined)
-    assert combined.case_id.nunique() == 90
-    assert not combined.duplicated(["case_id", "scale", "mode"]).any()
-    assert set(combined["mode"]) == {"unfiltered", "acl_fixed", "acl_proportional", "target_fixed"}
-    combined.to_csv(args.outdir / "scale_llm_complete_1080.csv", index=False)
+    # Fresh 90-query x 3-scale x 4-mode matrix uses one compact post-auth policy
+    # prompt for every condition, so authorization-scope candidate growth is not
+    # confounded by enumerating thousands of aliases in the LLM prompt.
+    scale = pd.read_csv(args.scale_complete)
+    if scale["authorized_task_success"].dtype != bool:
+        scale["authorized_task_success"] = scale["authorized_task_success"].astype(str).str.lower().eq("true")
+    assert len(scale) == 1080, len(scale)
+    assert scale.case_id.nunique() == 90
+    assert not scale.duplicated(["case_id", "scale", "mode"]).any()
+    assert set(scale["mode"]) == {"unfiltered", "acl_fixed", "acl_proportional", "target_fixed"}
+    assert set(scale["policy_prompt"]) == {"compact_postauth"}
 
     scale_rows = []
-    for (scale, mode), d in combined.groupby(["scale", "mode"], sort=True):
-        scale_rows.append({"scale": int(scale), "mode": str(mode), "n": int(len(d)), "ARSR": float(d.authorized_task_success.mean()), "median_retrieval_ms": float(d.retrieval_ms.median()), "median_generation_ms": float(d.generation_ms.median())})
+    for (n, mode), d in scale.groupby(["scale", "mode"], sort=True):
+        scale_rows.append({"scale": int(n), "mode": str(mode), "n": int(len(d)), "ARSR": float(d.authorized_task_success.mean()), "median_retrieval_ms": float(d.retrieval_ms.median()), "median_generation_ms": float(d.generation_ms.median()), "median_candidate_count": float(d.candidate_count.median())})
     scale_summary = pd.DataFrame(scale_rows)
     scale_summary.to_csv(args.outdir / "scale_llm_complete_summary.csv", index=False)
     metrics["scale_llm_complete"] = scale_summary.to_dict(orient="records")
 
-    for scale in sorted(combined["scale"].unique()):
-        pivot = combined[combined["scale"] == scale].pivot(index="case_id", columns="mode", values="authorized_task_success")
-        metrics.setdefault("scale_bootstrap", {})[str(int(scale))] = {
+    for n in sorted(scale["scale"].unique()):
+        pivot = scale[scale["scale"] == n].pivot(index="case_id", columns="mode", values="authorized_task_success")
+        metrics.setdefault("scale_bootstrap", {})[str(int(n))] = {
             "acl_fixed_minus_unfiltered": _paired_bootstrap(pivot["unfiltered"], pivot["acl_fixed"]),
             "acl_proportional_minus_unfiltered": _paired_bootstrap(pivot["unfiltered"], pivot["acl_proportional"]),
             "target_fixed_minus_unfiltered": _paired_bootstrap(pivot["unfiltered"], pivot["target_fixed"]),
@@ -229,8 +221,8 @@ def main() -> None:
     retrieval_summary = pd.read_csv(args.scale_retrieval_summary)
     density_rows = []
     for _, row in retrieval_summary.iterrows():
-        scale = int(row["scale"]); mode = str(row["mode"]); candidates = float(row["candidate_count_median"])
-        density_rows.append({"scale": scale, "mode": mode, "candidate_count_median": candidates, "authorization_density_rho": candidates / scale})
+        n = int(row["scale"]); mode = str(row["mode"]); candidates = float(row["candidate_count_median"])
+        density_rows.append({"scale": n, "mode": mode, "candidate_count_median": candidates, "authorization_density_rho": candidates / n})
     density = pd.DataFrame(density_rows)
     density.to_csv(args.outdir / "authorization_density.csv", index=False)
     metrics["authorization_density"] = density.to_dict(orient="records")
