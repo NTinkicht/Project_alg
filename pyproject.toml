@@ -22,7 +22,7 @@ experiment = [
   "safetensors>=0.4",
   "accelerate>=0.30",
 ]
-test = ["pytest>=8.0"]
+test = ["pytest>=8.0", "hypothesis>=6.112"]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
