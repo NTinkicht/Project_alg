@@ -83,12 +83,20 @@ def extract_target_aliases(text: str) -> list[str]:
     return sorted(set(re.findall(r"PAT-\d{2,6}(?!\d)", text.upper())))
 
 
-class Authenticator:
-    """Small deterministic authentication gate for the research prototype.
+def record_field(record: PatientRecord, field: str) -> str | None:
+    prefix = f"{field}:"
+    for line in record.text.splitlines():
+        if line.startswith(prefix):
+            return line.split(":", 1)[1].strip()
+    return None
 
-    The experiment is not intended to benchmark an identity provider. This helper merely
-    resolves a signed bearer token to a known software principal before authorization is
-    evaluated, so identity and authorization remain separate controls.
+
+class Authenticator:
+    """Deterministic authentication helper for the research prototype.
+
+    The evaluated benchmark begins after principal resolution. This component is
+    implemented and unit-tested so authentication and authorization remain
+    conceptually separate, but it is not exercised in the 3,000-case benchmark.
     """
 
     def __init__(self, secret: bytes, principals: Iterable[str]):
@@ -152,7 +160,8 @@ class Retriever:
 class FuzzyRiskController:
     """Interpretable Mamdani-style fuzzy risk controller.
 
-    Fuzzy output can only tighten handling. It never grants authorization.
+    The controller is subordinate to deterministic authorization: its output can
+    tighten handling but can never enlarge the ACL.
     """
 
     def __init__(self, allow_threshold: float = 0.34, deny_threshold: float = 0.66):
@@ -178,6 +187,9 @@ class FuzzyRiskController:
     @staticmethod
     def prompt_injection_risk(prompt: str) -> float:
         p = prompt.lower()
+        # Frozen before the held-out/paraphrase benchmark. The held-out set is
+        # checked not to contain these phrases, so its results measure lexical
+        # generalization rather than template memorization.
         weighted = {
             "ignore previous": 0.45,
             "ignore the previous": 0.45,
@@ -216,7 +228,8 @@ class FuzzyRiskController:
             return 0.50
         return 0.35
 
-    def assess(self, account: str, prompt: str, acl: AuthorizationMatrix, session_trust: float) -> RiskResult:
+    @classmethod
+    def feature_values(cls, account: str, prompt: str, acl: AuthorizationMatrix, session_trust: float) -> tuple[float, float, float, float]:
         targets = extract_target_aliases(prompt)
         if not targets:
             auth_conf = 0.50
@@ -224,10 +237,13 @@ class FuzzyRiskController:
             auth_conf = 0.95
         else:
             auth_conf = 0.05
-        inj = self.prompt_injection_risk(prompt)
-        sens = self.request_sensitivity(prompt)
+        inj = cls.prompt_injection_risk(prompt)
+        sens = cls.request_sensitivity(prompt)
         trust = float(np.clip(session_trust, 0, 1))
+        return auth_conf, inj, sens, trust
 
+    def assess(self, account: str, prompt: str, acl: AuthorizationMatrix, session_trust: float) -> RiskResult:
+        auth_conf, inj, sens, trust = self.feature_values(account, prompt, acl, session_trust)
         A, P, S, T = map(self._memberships, [auth_conf, inj, sens, trust])
         rules: list[tuple[float, str]] = []
         rules.append((A["low"], "high"))
@@ -255,6 +271,31 @@ class FuzzyRiskController:
             decision = "STEP_UP"
         else:
             decision = "DENY"
+        return RiskResult(score, decision, auth_conf, inj, sens, trust)
+
+
+class DeterministicRiskController:
+    """Non-fuzzy comparator using the same non-label-derived risk features.
+
+    This is intentionally simple: it tests whether Mamdani inference adds useful
+    behavior beyond transparent threshold rules on the identical feature set.
+    Like the fuzzy controller, it can never enlarge the ACL.
+    """
+
+    def assess(self, account: str, prompt: str, acl: AuthorizationMatrix, session_trust: float) -> RiskResult:
+        auth_conf, inj, sens, trust = FuzzyRiskController.feature_values(account, prompt, acl, session_trust)
+        if auth_conf < 0.50:
+            decision = "DENY"
+            score = 0.90
+        elif inj >= 0.65 or (inj >= 0.40 and sens >= 0.70):
+            decision = "DENY"
+            score = 0.78
+        elif inj >= 0.20 or sens >= 0.90 or trust < 0.55 or auth_conf < 0.90:
+            decision = "STEP_UP"
+            score = 0.50
+        else:
+            decision = "ALLOW"
+            score = 0.20
         return RiskResult(score, decision, auth_conf, inj, sens, trust)
 
 
