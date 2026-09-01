@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import statistics
 import urllib.request
 import zipfile
 
@@ -93,6 +94,17 @@ def normalize_record(alias: str, pid: str, patient: dict, buckets: dict[str, lis
     return PatientRecord(alias, pid, "\n".join(lines), canary, primary_condition, primary_medication)
 
 
+def _summary(values: list[int]) -> dict[str, float | int]:
+    if not values:
+        return {"min": 0, "median": 0.0, "mean": 0.0, "max": 0}
+    return {
+        "min": int(min(values)),
+        "median": float(statistics.median(values)),
+        "mean": float(statistics.fmean(values)),
+        "max": int(max(values)),
+    }
+
+
 def _persist_dataset(parsed: list[tuple[str, dict, dict[str, list[str]]]], out_dir: Path, n: int) -> list[PatientRecord]:
     if len(parsed) < n:
         raise RuntimeError(f"Expected at least {n} patient bundles, found {len(parsed)}")
@@ -125,6 +137,20 @@ def _persist_dataset(parsed: list[tuple[str, dict, dict[str, list[str]]]], out_d
         "protected_patient_count": protected_count,
         "alias_width": width,
         "accounts": {k: len(v) for k, v in mapping.items()},
+        "selection": "SHA-256(patient_id) ascending, first n",
+        "synthea_version": SYNTHEA_GENERATOR_VERSION,
+        "synthea_seed": SYNTHEA_GENERATOR_SEED,
+        "reference_date": SYNTHEA_REFERENCE_DATE,
+    })
+
+    resource_stats: dict[str, dict[str, float | int]] = {}
+    for rt in sorted(RESOURCE_TYPES - {"Patient"}):
+        resource_stats[rt] = _summary([len(buckets.get(rt, [])) for _, _, buckets in selected])
+    save_json(out_dir / "dataset_stats.json", {
+        "patients": n,
+        "normalized_text_characters": _summary([len(r.text) for r in records]),
+        "unique_display_values_per_patient": resource_stats,
+        "note": "Resource counts summarize unique coded/display values retained during bundle parsing, before per-field normalization truncation; they are descriptive rather than raw FHIR resource totals.",
     })
     return records
 
@@ -139,6 +165,12 @@ def build_dataset_from_fhir_dir(fhir_dir: Path, out_dir: Path, n: int = 1000) ->
 
 
 def build_dataset(archive: Path, out_dir: Path, n: int = 25) -> list[PatientRecord]:
+    """Developer convenience path using pinned pre-generated sample data.
+
+    The publication CI does not use this path; it runs the pinned Synthea v4.0.0
+    generator and passes --fhir-dir. Keeping the distinction explicit prevents a
+    local developer sample from being mistaken for the authoritative dataset.
+    """
     extract_dir = out_dir / "raw_fhir"
     extract_dir.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(archive) as zf:
@@ -163,7 +195,7 @@ def main():
     else:
         args.archive.parent.mkdir(parents=True, exist_ok=True)
         if not args.archive.exists():
-            print(f"Downloading pinned Synthea sample ({SYNTHEA_SAMPLE_COMMIT}) from {args.url}")
+            print(f"Downloading pinned Synthea developer sample ({SYNTHEA_SAMPLE_COMMIT}) from {args.url}")
             urllib.request.urlretrieve(args.url, args.archive)
         records = build_dataset(args.archive, args.out, n=args.count)
     print(f"Prepared {len(records)} deterministic Synthea patient records in {args.out}")
