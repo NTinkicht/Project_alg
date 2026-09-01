@@ -32,9 +32,9 @@ def main():
     args = ap.parse_args()
     args.outdir.mkdir(parents=True, exist_ok=True)
     df = pd.read_csv(args.results)
-    if df.authorized_task_success.dtype != bool:
-        df["authorized_task_success"] = df.authorized_task_success.astype(str).str.lower().eq("true")
-    df["aliases"] = df.retrieved_aliases.map(_parse_aliases)
+    if df["authorized_task_success"].dtype != bool:
+        df["authorized_task_success"] = df["authorized_task_success"].astype(str).str.lower().eq("true")
+    df["aliases"] = df["retrieved_aliases"].map(_parse_aliases)
 
     rows = []
     metrics: dict = {"paired_tests": {}, "retrieval_identity": {}}
@@ -43,24 +43,24 @@ def main():
             "scale": int(scale),
             "mode": mode,
             "n": len(d),
-            "ARSR": float(d.authorized_task_success.mean()),
-            "median_retrieval_ms": float(d.retrieval_ms.median()),
-            "median_generation_ms": float(d.generation_ms.median()),
+            "ARSR": float(d["authorized_task_success"].mean()),
+            "median_retrieval_ms": float(d["retrieval_ms"].median()),
+            "median_generation_ms": float(d["generation_ms"].median()),
         })
-        pivot = df[df.scale == scale].pivot(index="case_id", columns="mode", values="authorized_task_success")
+        pivot = df[df["scale"] == scale].pivot(index="case_id", columns="mode", values="authorized_task_success")
         if {"unfiltered", "acl_fixed"}.issubset(pivot.columns):
-            metrics["paired_tests"][f"unfiltered_vs_acl_fixed_{int(scale)}"] = _mcnemar(pivot.unfiltered, pivot.acl_fixed)
+            metrics["paired_tests"][f"unfiltered_vs_acl_fixed_{int(scale)}"] = _mcnemar(pivot["unfiltered"], pivot["acl_fixed"])
         if {"unfiltered", "target_fixed"}.issubset(pivot.columns):
-            metrics["paired_tests"][f"unfiltered_vs_target_fixed_{int(scale)}"] = _mcnemar(pivot.unfiltered, pivot.target_fixed)
+            metrics["paired_tests"][f"unfiltered_vs_target_fixed_{int(scale)}"] = _mcnemar(pivot["unfiltered"], pivot["target_fixed"])
 
     for mode in ["unfiltered", "acl_fixed", "target_fixed"]:
-        d = df[df.mode == mode]
+        d = df[df["mode"] == mode]
         success = d.pivot(index="case_id", columns="scale", values="authorized_task_success")
         if {1000, 100000}.issubset(success.columns):
             metrics["paired_tests"][f"{mode}_ARSR_1k_vs_100k"] = _mcnemar(success[1000], success[100000])
         identities = d.set_index(["case_id", "scale"])["aliases"]
         changed = []
-        for cid in d.case_id.unique():
+        for cid in d["case_id"].unique():
             try:
                 changed.append(identities.loc[(cid, 1000)] != identities.loc[(cid, 100000)])
             except KeyError:
