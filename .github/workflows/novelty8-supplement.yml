@@ -1,0 +1,146 @@
+name: Novelty-8 Supplementary Analysis
+
+on:
+  push:
+    branches: [novelty-8-structural-heuristic]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  BASE_RESEARCH_RUN: "33523950201"
+  BASE_SCALE_RUN: "33523949995"
+  BASE_NOVELTY_RUN: "33554636519"
+  HF_HUB_DISABLE_TELEMETRY: "1"
+  TOKENIZERS_PARALLELISM: "false"
+
+jobs:
+  offline-supplement:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[novelty8-supplement]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[test]'
+      - name: Download authoritative baseline and novelty-8 artifacts
+        run: |
+          gh run download "$BASE_RESEARCH_RUN" -n healthrag-revision-prepared-data -D data/processed
+          gh run download "$BASE_RESEARCH_RUN" -n healthrag-audit-revision-artifacts -D baseline_core
+          gh run download "$BASE_SCALE_RUN" -n healthrag-scalability-final-artifacts -D baseline_scale
+          gh run download "$BASE_NOVELTY_RUN" -n novelty8-complete-results -D novelty_current
+          find baseline_core baseline_scale novelty_current -maxdepth 5 -type f | sort
+      - name: Re-run strengthened adaptive evasion analysis
+        run: |
+          python -m healthrag.adaptive_attack \
+            --records data/processed/records.json \
+            --auth data/processed/authorization.json \
+            --cases data/processed/test_cases.json \
+            --outdir artifacts/supplement/adaptive_attack
+      - name: Template-cluster inference for authoritative SmolLM2 results
+        run: |
+          PRIMARY=$(find baseline_core -name results.csv | head -1)
+          CONTROLLED=$(find baseline_core -name controlled_k1.csv | head -1)
+          HELDOUT=$(find baseline_core -name heldout_results.csv | head -1)
+          python -m healthrag.cluster_stats \
+            --primary "$PRIMARY" --controlled "$CONTROLLED" --heldout "$HELDOUT" \
+            --label SmolLM2-360M-Instruct --outdir artifacts/supplement/cluster_smol
+      - name: Feature ablations for both risk controllers
+        run: |
+          RISK=$(find baseline_core -name risk_decisions.csv | head -1)
+          python -m healthrag.risk_ablation --risk-decisions "$RISK" --outdir artifacts/supplement/risk_ablation
+      - name: Cross-model replication and Qwen template-cluster analysis
+        run: |
+          BP=$(find baseline_core -name results.csv | head -1)
+          BC=$(find baseline_core -name controlled_k1.csv | head -1)
+          BH=$(find baseline_core -name heldout_results.csv | head -1)
+          RP=$(find novelty_current -name qwen_primary.csv | head -1)
+          RC=$(find novelty_current -name qwen_controlled_k1.csv | head -1)
+          RH=$(find novelty_current -name qwen_heldout.csv | head -1)
+          test -n "$RP" -a -n "$RC" -a -n "$RH"
+          python -m healthrag.model_replication_analysis \
+            --baseline-primary "$BP" --baseline-controlled "$BC" --baseline-heldout "$BH" \
+            --replication-primary "$RP" --replication-controlled "$RC" --replication-heldout "$RH" \
+            --outdir artifacts/supplement/model_replication
+          python -m healthrag.cluster_stats \
+            --primary "$RP" --controlled "$RC" --heldout "$RH" \
+            --label Qwen2.5-0.5B-Instruct --outdir artifacts/supplement/cluster_qwen
+      - name: Fixed-versus-proportional authorization-scope analysis
+        run: |
+          BASE_LLM=$(find baseline_scale -name scale_llm_results.csv | head -1)
+          RETRIEVAL=$(find baseline_scale -name scalability_results.csv | head -1)
+          PROP=$(find novelty_current -name scale_acl_proportional.csv | head -1)
+          test -n "$BASE_LLM" -a -n "$RETRIEVAL" -a -n "$PROP"
+          python -m healthrag.scale_scope_analysis \
+            --baseline-llm "$BASE_LLM" --proportional-llm "$PROP" --retrieval-results "$RETRIEVAL" \
+            --outdir artifacts/supplement/scale_scope
+      - name: Preserve prior novelty outputs and checksums
+        run: |
+          mkdir -p artifacts/supplement/prior
+          cp -r novelty_current/* artifacts/supplement/prior/
+          find artifacts/supplement -type f -print0 | sort -z | xargs -0 sha256sum > artifacts/supplement/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: novelty8-supplement-offline
+          path: artifacts/supplement/
+          retention-days: 30
+
+  semantic-supplement:
+    needs: offline-supplement
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[experiment]'
+      - uses: actions/download-artifact@v4
+        with:
+          name: novelty8-supplement-offline
+          path: supplement
+      - name: Independent two-order semantic-equivalence validation
+        run: |
+          ADAPT=$(find supplement -name adaptive_evasion.csv | grep adaptive_attack | head -1)
+          python -m healthrag.semantic_judge \
+            --model TinyLlama/TinyLlama-1.1B-Chat-v1.0 \
+            --adaptive-csv "$ADAPT" \
+            --outdir artifacts/semantic_supplement
+      - uses: actions/upload-artifact@v4
+        with:
+          name: novelty8-supplement-semantic
+          path: artifacts/semantic_supplement/
+          retention-days: 30
+
+  finalize-supplement:
+    needs: [offline-supplement, semantic-supplement]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: novelty8-supplement-offline
+          path: final/offline
+      - uses: actions/download-artifact@v4
+        with:
+          name: novelty8-supplement-semantic
+          path: final/semantic
+      - name: Record complete supplement manifest
+        run: |
+          find final -type f -print0 | sort -z | xargs -0 sha256sum > final/SHA256SUMS_COMPLETE.txt
+          find final -type f | sort
+      - uses: actions/upload-artifact@v4
+        with:
+          name: novelty8-supplement-complete
+          path: final/
+          retention-days: 30
