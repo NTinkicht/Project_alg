@@ -14,6 +14,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--pairs", type=Path, default=Path("data/processed/adaptive_pairs.json"))
     ap.add_argument("--model", default="sentence-transformers/all-MiniLM-L6-v2")
+    ap.add_argument("--model-revision", default="1110a24")
     ap.add_argument("--threshold", type=float, default=0.50)
     ap.add_argument("--required-fraction", type=float, default=0.95)
     ap.add_argument("--outdir", type=Path, default=Path("artifacts/semantic_validation"))
@@ -23,7 +24,7 @@ def main() -> None:
     from sentence_transformers import SentenceTransformer
 
     pairs = json.loads(args.pairs.read_text())
-    model = SentenceTransformer(args.model)
+    model = SentenceTransformer(args.model, revision=args.model_revision)
     originals = [x["original"] for x in pairs]
     adaptives = [x["adaptive"] for x in pairs]
     a = model.encode(originals, normalize_embeddings=True, show_progress_bar=False)
@@ -45,6 +46,7 @@ def main() -> None:
     df.to_csv(args.outdir / "adaptive_semantic_validation.csv", index=False)
     metrics = {
         "encoder": args.model,
+        "encoder_revision": args.model_revision,
         "threshold": args.threshold,
         "n": int(len(df)),
         "structural_intent_preserved_fraction": float(df.structural_intent_preserved.mean()),
