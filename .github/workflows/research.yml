@@ -1,12 +1,12 @@
-name: Research Reproduction
+name: Research Reproduction - Audit Revision
 
 on:
   push:
-    branches: [main, large-benchmark-3000]
+    branches: [audit-revision-100k]
   workflow_dispatch:
 
 concurrency:
-  group: healthrag-research-${{ github.ref }}
+  group: healthrag-research-revision-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -16,7 +16,7 @@ env:
   TOKENIZERS_PARALLELISM: "false"
   HF_HUB_DISABLE_TELEMETRY: "1"
   MODEL_NAME: HuggingFaceTB/SmolLM2-360M-Instruct
-  SHARD_COUNT: "12"
+  PRIMARY_SHARDS: "12"
 
 jobs:
   prepare:
@@ -35,7 +35,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e '.[experiment,test]'
-      - name: Unit and architecture tests
+      - name: Unit, leakage-control, and formal-correspondence tests
         run: pytest -q
       - name: Checkout pinned Synthea generator
         uses: actions/checkout@v4
@@ -51,31 +51,39 @@ jobs:
             --exporter.fhir.export=true \
             --exporter.fhir.transaction_bundle=true \
             --generate.log_patients.detail=none Massachusetts
-      - name: Normalize dataset and generate 3,000-case benchmark
+      - name: Normalize dataset and generate primary plus audit benchmarks
         run: |
           python -m healthrag.data --fhir-dir data/synthea_generated/fhir --count 1000
           python -m healthrag.prompts --count 3000
           python - <<'PY'
           import json
           from pathlib import Path
-          cases=json.loads(Path('data/processed/test_cases.json').read_text())
+          from healthrag.core import FuzzyRiskController
+          p=Path('data/processed')
+          cases=json.loads((p/'test_cases.json').read_text())
           assert len(cases)==3000
           assert sum(c['is_legitimate'] for c in cases)==1000
           assert sum(not c['is_authorized'] for c in cases)==1750
-          regression=json.loads(Path('data/processed/regression_cases.json').read_text())
+          regression=json.loads((p/'regression_cases.json').read_text())
           assert len(regression)==72 and sum(not c['is_authorized'] for c in regression)==42
-          print('Benchmark manifest validated')
+          heldout=json.loads((p/'heldout_cases.json').read_text())
+          assert len(heldout)==300 and sum(c['is_authorized'] for c in heldout)==150
+          assert all(FuzzyRiskController.prompt_injection_risk(c['prompt'])==0.0 for c in heldout)
+          resolution=json.loads((p/'resolution_cases.json').read_text())
+          assert len(resolution)==200 and sum(c['is_legitimate'] for c in resolution)==100
+          assert (p/'dataset_stats.json').exists()
+          print('All benchmark manifests validated')
           PY
       - uses: actions/upload-artifact@v4
         with:
-          name: healthrag-prepared-data
+          name: healthrag-revision-prepared-data
           path: data/processed/
           retention-days: 30
 
-  experiment:
+  primary-experiment:
     needs: prepare
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 240
     strategy:
       fail-fast: false
       max-parallel: 12
@@ -92,25 +100,131 @@ jobs:
           pip install -e '.[experiment]'
       - uses: actions/download-artifact@v4
         with:
-          name: healthrag-prepared-data
+          name: healthrag-revision-prepared-data
           path: data/processed
-      - name: Run empirical LLM shard
+      - name: Run revised primary LLM shard
         run: |
           python -m healthrag.experiment \
             --model "$MODEL_NAME" \
             --shard-index ${{ matrix.shard }} \
-            --num-shards "$SHARD_COUNT" \
-            --out artifacts/shard_${{ matrix.shard }}.csv
+            --num-shards "$PRIMARY_SHARDS" \
+            --out artifacts/primary_${{ matrix.shard }}.csv
       - uses: actions/upload-artifact@v4
         with:
-          name: healthrag-shard-${{ matrix.shard }}
-          path: artifacts/shard_${{ matrix.shard }}.csv
+          name: healthrag-primary-${{ matrix.shard }}
+          path: artifacts/primary_${{ matrix.shard }}.csv
+          retention-days: 30
+
+  controlled-k1:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[experiment]'
+      - uses: actions/download-artifact@v4
+        with:
+          name: healthrag-revision-prepared-data
+          path: data/processed
+      - name: Run paired controlled k=1 utility shard
+        run: |
+          python -m healthrag.experiment \
+            --model "$MODEL_NAME" \
+            --legitimate-only \
+            --retrieval-k 1 \
+            --shard-index ${{ matrix.shard }} \
+            --num-shards 6 \
+            --out artifacts/controlled_${{ matrix.shard }}.csv
+      - uses: actions/upload-artifact@v4
+        with:
+          name: healthrag-controlled-${{ matrix.shard }}
+          path: artifacts/controlled_${{ matrix.shard }}.csv
+          retention-days: 30
+
+  heldout-experiment:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        shard: [0, 1, 2]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[experiment]'
+      - uses: actions/download-artifact@v4
+        with:
+          name: healthrag-revision-prepared-data
+          path: data/processed
+      - name: Run held-out paraphrase benchmark
+        run: |
+          python -m healthrag.experiment \
+            --model "$MODEL_NAME" \
+            --cases data/processed/heldout_cases.json \
+            --shard-index ${{ matrix.shard }} \
+            --num-shards 3 \
+            --out artifacts/heldout_${{ matrix.shard }}.csv
+      - uses: actions/upload-artifact@v4
+        with:
+          name: healthrag-heldout-${{ matrix.shard }}
+          path: artifacts/heldout_${{ matrix.shard }}.csv
+          retention-days: 30
+
+  resolution-experiment:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard: [0, 1]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[experiment]'
+      - uses: actions/download-artifact@v4
+        with:
+          name: healthrag-revision-prepared-data
+          path: data/processed
+      - name: Run alias-free target-resolution benchmark
+        run: |
+          python -m healthrag.experiment \
+            --model "$MODEL_NAME" \
+            --cases data/processed/resolution_cases.json \
+            --shard-index ${{ matrix.shard }} \
+            --num-shards 2 \
+            --out artifacts/resolution_${{ matrix.shard }}.csv
+      - uses: actions/upload-artifact@v4
+        with:
+          name: healthrag-resolution-${{ matrix.shard }}
+          path: artifacts/resolution_${{ matrix.shard }}.csv
           retention-days: 30
 
   analyze-and-verify:
-    needs: experiment
+    needs: [primary-experiment, controlled-k1, heldout-experiment, resolution-experiment]
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -122,30 +236,55 @@ jobs:
           pip install -e '.[experiment,test]'
       - uses: actions/download-artifact@v4
         with:
-          name: healthrag-prepared-data
+          name: healthrag-revision-prepared-data
           path: data/processed
       - uses: actions/download-artifact@v4
         with:
-          pattern: healthrag-shard-*
-          path: artifacts/shards
+          pattern: healthrag-primary-*
+          path: artifacts/primary_shards
           merge-multiple: true
-      - name: Merge and validate empirical shards
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: healthrag-controlled-*
+          path: artifacts/controlled_shards
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: healthrag-heldout-*
+          path: artifacts/heldout_shards
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: healthrag-resolution-*
+          path: artifacts/resolution_shards
+          merge-multiple: true
+      - name: Merge and strictly validate every empirical result set
         run: |
           python - <<'PY'
           from pathlib import Path
           import pandas as pd
-          files=sorted(Path('artifacts/shards').glob('shard_*.csv'))
-          assert len(files)==12, files
-          df=pd.concat([pd.read_csv(p) for p in files], ignore_index=True)
-          assert len(df)==9000, len(df)
-          assert df.case_id.nunique()==3000
-          counts=df.groupby('architecture').size().to_dict()
-          assert counts=={'pre_retrieval_acl':3000,'prompt_only':3000,'risk_aware':3000}, counts
-          df.sort_values(['case_id','architecture']).to_csv('artifacts/results.csv', index=False)
-          print(counts)
+          def merge(folder, pattern, expected_files, expected_rows, expected_cases, out):
+              files=sorted(Path(folder).glob(pattern))
+              assert len(files)==expected_files, (folder, files)
+              df=pd.concat([pd.read_csv(p) for p in files], ignore_index=True)
+              assert len(df)==expected_rows, (out, len(df))
+              assert df.case_id.nunique()==expected_cases, (out, df.case_id.nunique())
+              assert not df.duplicated(['case_id','architecture']).any(), out
+              counts=df.groupby('architecture').size().to_dict()
+              assert set(counts)=={'prompt_only','pre_retrieval_acl','risk_aware'}, counts
+              Path(out).parent.mkdir(parents=True, exist_ok=True)
+              df.sort_values(['case_id','architecture']).to_csv(out,index=False)
+              print(out, counts)
+          merge('artifacts/primary_shards','primary_*.csv',12,9000,3000,'artifacts/results.csv')
+          merge('artifacts/controlled_shards','controlled_*.csv',6,3000,1000,'artifacts/controlled_k1.csv')
+          merge('artifacts/heldout_shards','heldout_*.csv',3,900,300,'artifacts/heldout_results.csv')
+          merge('artifacts/resolution_shards','resolution_*.csv',2,600,200,'artifacts/resolution_results.csv')
           PY
-      - name: Analyze empirical results
-        run: python -m healthrag.analysis
+      - name: Analyze primary and audit-driven experiments
+        run: |
+          python -m healthrag.analysis
+          python -m healthrag.revision_analysis
+          python -m healthrag.risk_eval
       - name: Download and validate NuSMV 2.7.1
         run: |
           sudo apt-get update
@@ -167,7 +306,7 @@ jobs:
           grep -q 'NuSMV 2.7.1' /tmp/nusmv_help.txt
       - name: Formal verification
         run: python -m healthrag.formal --nusmv "$NUSMV"
-      - name: Collect reproducibility metadata
+      - name: Collect revision reproducibility metadata
         if: always()
         run: |
           python - <<'PY'
@@ -179,27 +318,39 @@ jobs:
             'repository_commit':os.environ.get('GITHUB_SHA'),'python':sys.version,'platform':platform.platform(),
             'torch':torch.__version__,'transformers':transformers.__version__,'sklearn':sklearn.__version__,
             'scipy':scipy.__version__,'pandas':pandas.__version__,'model':os.environ['MODEL_NAME'],
-            'decoding':'greedy/do_sample=False','max_new_tokens':64,'patient_count':1000,'prompt_count':3000,
-            'architecture_executions':9000,'shards':12,'synthea_version':SYNTHEA_GENERATOR_VERSION,
-            'synthea_seed':SYNTHEA_GENERATOR_SEED,'synthea_reference_date':SYNTHEA_REFERENCE_DATE,
+            'decoding':'greedy/do_sample=False','max_new_tokens':64,'patient_count':1000,
+            'primary_cases':3000,'primary_architecture_executions':9000,
+            'controlled_k1_executions':3000,'heldout_executions':900,'resolution_executions':600,
+            'total_llm_executions_this_revision':13500,'primary_shards':12,
+            'synthea_version':SYNTHEA_GENERATOR_VERSION,'synthea_seed':SYNTHEA_GENERATOR_SEED,
+            'synthea_reference_date':SYNTHEA_REFERENCE_DATE,
+            'session_trust':'deterministic simulated telemetry from SHA-256(account,target,seed), independent of benchmark category',
+            'heldout_detector_overlap':'FuzzyRiskController.prompt_injection_risk == 0.0 for every held-out prompt',
             'architectures':['prompt_only','pre_retrieval_acl','risk_aware'],'nusmv_version':'2.7.1'}
-          Path('artifacts').mkdir(exist_ok=True)
-          Path('artifacts/reproducibility.json').write_text(json.dumps(meta,indent=2))
+          Path('artifacts/reproducibility_revision.json').write_text(json.dumps(meta,indent=2))
           PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: healthrag-research-artifacts-3000
+          name: healthrag-audit-revision-artifacts
           path: |
             artifacts/results.csv
+            artifacts/controlled_k1.csv
+            artifacts/heldout_results.csv
+            artifacts/resolution_results.csv
             artifacts/analysis/
+            artifacts/revision_analysis/
+            artifacts/risk_eval/
             artifacts/formal/
-            artifacts/reproducibility.json
+            artifacts/reproducibility_revision.json
             data/processed/authorization.json
             data/processed/protected_pool.json
             data/processed/test_cases.json
             data/processed/regression_cases.json
+            data/processed/heldout_cases.json
+            data/processed/resolution_cases.json
             data/processed/dataset_manifest.json
+            data/processed/dataset_stats.json
             formal/secured.smv
             formal/negative_control.smv
           retention-days: 30

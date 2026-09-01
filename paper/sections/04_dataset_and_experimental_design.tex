@@ -1,0 +1,38 @@
+\section{Dataset and Experimental Design}
+\subsection{Synthetic corpus and authorization model}
+The publication benchmark uses Synthea v4.0.0, seed 4103, reference date 2026-01-01, Massachusetts, producing 1,000 normalized FHIR R4 patient records. The median normalized record is 1,430 characters. Accounts A--D receive 200 patients each; 200 additional patients form a globally protected pool, and account E receives no permissions. Aliases \texttt{PAT-0001}--\texttt{PAT-1000} are used in the controlled prompts. The protected pool is not inert: 400 benchmark cases target protected aliases, spanning direct unauthorized and all five adversarial categories.
+
+\begin{table}[t]
+\caption{Primary benchmark composition.}
+\label{tab:composition}
+\centering
+\footnotesize
+\begin{tabular}{lrr}
+\toprule
+Category & Cases & Unauthorized \\
+\midrule
+Authorized normal & 1,000 & 0 \\
+Direct unauthorized & 1,000 & 1,000 \\
+Authorized suspicious & 250 & 0 \\
+Direct injection & 150 & 150 \\
+Privilege/debug & 150 & 150 \\
+Context extraction & 150 & 150 \\
+Role-play/obfuscated & 150 & 150 \\
+Multi-step & 150 & 150 \\
+\midrule
+Total & 3,000 & 1,750 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Each case is executed against three architectures with the same SmolLM2-360M-Instruct checkpoint, greedy decoding, and \texttt{max\_new\_tokens=64}, yielding 9,000 primary executions. A separate 1,000-case legitimate-only follow-up is executed across all three architectures with explicit $k=1$ retrieval, adding 3,000 executions. We also add 300 held-out cases (150 unauthorized and 150 authorized-but-suspicious) and 200 alias-free name-resolution cases, for a total of 13,500 core LLM executions.
+
+\subsection{Risk-feature redesign and comparators}
+Earlier versions used a session-trust feature tied to benchmark category. The revision replaces it with deterministic simulated telemetry derived from account, target, and seed: failed-authorization count, request rate, off-hours use, and known-device status. Category-wise trust means are tightly clustered (approximately 0.68--0.70; medians 0.71), removing label separability. We compare the fuzzy controller with deterministic threshold rules built over the same non-label-derived features. Both controllers are hand-tuned; the comparison asks whether fuzzy aggregation contributes observed value, not whether either threshold set is optimal.
+
+The held-out suspicious templates are deliberately lexically disjoint from the frozen injection-keyword detector: all held-out prompts receive injection risk 0.0. This makes the held-out set a test of heuristic generalization, while unauthorized-target denial remains structurally governed by ACL membership.
+
+\subsection{Statistics and independence caveat}
+Paired binary outcomes are compared with exact McNemar tests. Wilson intervals describe binomial proportions. For the controlled $k=1$ utility difference we additionally bootstrap the paired risk difference with 20,000 draws. Latency and retrieval-scale comparisons use paired Wilcoxon tests where appropriate.
+
+Case-level intervals and $p$-values should not be interpreted as 150 or 1,750 independent attack \emph{strategies}. Attack categories reuse a small number of templates instantiated with different targets. We therefore report the leaking template explicitly and treat template dependence as a primary threat to validity rather than inflating the effective evidence count.

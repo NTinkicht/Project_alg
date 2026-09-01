@@ -1,0 +1,37 @@
+\section{Robustness and Audit Checks}
+Several diagnostics were retained specifically to prevent favorable aggregate rates from hiding implementation artifacts.
+
+\textbf{Feature-label separation.} The revised session-trust signal is generated from deterministic account/target telemetry rather than benchmark category. Across the eight primary categories, mean trust ranges only from 0.6800 to 0.6977 and every category has median 0.71. Authorized-normal and authorized-suspicious means are 0.6909 and 0.6904, respectively. This does not prove that every possible derived feature is statistically independent of prompt class, but it rules out the previous direct category-to-trust encoding and removes the large separability that could have made risk decisions tautological.
+
+\begin{table}[t]
+\caption{Selected session-trust diagnostics after leakage removal.}
+\label{tab:trust}
+\centering
+\scriptsize
+\begin{tabular}{lrr}
+\toprule
+Category & Mean trust & Median \\
+\midrule
+Authorized normal & 0.6909 & 0.71 \\
+Authorized suspicious & 0.6904 & 0.71 \\
+Direct unauthorized & 0.6800 & 0.71 \\
+Direct injection & 0.6975 & 0.71 \\
+Privilege/debug & 0.6977 & 0.71 \\
+Context extraction & 0.6892 & 0.71 \\
+Role-play/obfuscated & 0.6929 & 0.71 \\
+Multi-step & 0.6967 & 0.71 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Protected-pool exercise.} The 200 globally protected patients are directly targeted by 400 primary cases: 233 direct-unauthorized, 34 direct-injection, 34 privilege/debug, 33 context-extraction, 32 role-play/obfuscated, and 34 multi-step cases. Thus the zero secured \ucer{} result is not obtained by leaving the protected partition untouched. The same check also prevents a common synthetic-benchmark error in which authorization labels exist but every sampled target happens to fall inside some account's permissions.
+
+\textbf{Pair completeness.} The authoritative workflow validates exact row counts and uniqueness before analysis. The primary result contains 9,000 unique $(\text{case},\text{architecture})$ pairs; the controlled set contains 3,000; held-out contains 900; and alias-free resolution contains 600. The 100K artifact contains 6,000 retrieval rows and 810 generation rows with no duplicate $(\text{case},\text{scale},\text{mode})$ keys. This matters for exact paired tests: a missing shard cannot silently change a denominator or convert a paired comparison into an unpaired one.
+
+\textbf{Zero-event interpretation.} For both secured architectures, 0/1,750 unauthorized context exposures gives a Wilson 95\% interval with upper endpoint 0.219\%. We therefore use ``zero observed exposures'' rather than ``zero risk.'' The same caution applies to 0/1,750 canary disclosures. Conversely, the prompt-only \udr{} estimate of 5/1,750 has a 95\% interval of approximately 0.122--0.667\%, emphasizing that generated leakage is rare relative to the 100\% context-exposure failure in that architecture.
+
+\textbf{Latency scope.} End-to-end generation latency in GitHub-hosted runners is noisy and includes CPU model inference, so absolute primary-run values are descriptive. The controlled $k=1$ medians are approximately 9.45 s for all three architectures, while the original $k=2$ legitimate medians are 12.51 s (prompt-only), 13.48 s (pre-ACL), and 13.14 s (risk-aware) in the final run. We do not interpret the difference as production serving overhead. The scale retrieval experiment is more informative for systems behavior because paired queries execute inside the same job against one pre-built matrix and report retriever-only timing.
+
+\textbf{Negative-control formal model.} In addition to proving seven CTL properties in the secured abstraction, the workflow checks a deliberately vulnerable model in which login flows directly to retrieval. Four corresponding safety specifications are expected to fail and do fail with counterexamples. This negative control is important because a set of trivially true or incorrectly encoded temporal formulas could otherwise create false confidence in the formal result.
+
+Together, these checks do not eliminate external-validity limitations, but they reduce several internal-validity risks that are particularly relevant to security evaluations: label leakage, untouched protected data, shard loss, denominator drift, zero-event overclaiming, and vacuous formal properties.
