@@ -1,7 +1,8 @@
-\section{Threat Model and Security Boundary}
+\section{Threat Model and Structural--Heuristic Framework}
 The evaluated pipeline begins after a principal has been resolved to an account label. Authentication, identity proofing, token theft, account compromise, and correctness of the upstream identity provider are out of scope. The adversary can submit arbitrary text to the RAG query interface and can reference patients for whom the resolved account has no permission. We assume the authorization matrix supplied to the retriever is correct; ACL administration errors are therefore also outside the modeled boundary.
 
-The critical distinction is shown below:
+We distinguish two security-control classes. A \emph{structural control} decides which resources can enter the retrieval candidate set from authenticated principal and policy state; its confidentiality boundary should therefore not depend on attack phrasing. A \emph{heuristic control} decides whether a request appears risky from features of the request or session. Heuristics may be valuable for step-up authentication, rate limiting, or defense in depth, but in our composition they can only tighten handling and can never enlarge the structural ACL. This distinction is about enforcement semantics rather than implementation technology: an ML classifier could participate in a structural policy only if its output itself defined the policy boundary, while the frozen risk detector evaluated here is explicitly subordinate to the ACL.
+
 \begin{figure}[t]
 \centering
 \footnotesize
@@ -11,9 +12,17 @@ Request & $\rightarrow$ & Auth/Risk & $\rightarrow$ & ACL filter \\
 &&&& $\downarrow$ \\
 && LLM $\leftarrow$ Context $\leftarrow$ & Retrieval &
 \end{tabular}
-\caption{Secured ordering. Authorization constrains the candidate set before retrieval; the risk layer can tighten but cannot widen the ACL.}
+\caption{Secured ordering. The structural ACL constrains candidates before retrieval; heuristic risk control may tighten but cannot widen that set.}
 \label{fig:pipeline}
 \end{figure}
 In the prompt-only baseline, retrieval is global and the authorization rule appears in the system prompt. This is not a no-policy straw man: it retains an authorization instruction but tests whether prompt-level policy is an adequate substitute for a retrieval-time boundary. In both secured architectures, candidate records are first restricted to the account ACL. The risk-aware architecture may reject or step up a request before retrieval, but an \texttt{ALLOW} decision cannot add records outside the ACL.
 
-We define \ucer{} for an unauthorized request as the event that at least one record outside the requesting account's permissions is included in retrieved context. \udr{} is narrower: it detects whether a synthetic, record-specific security marker appears in generated output. A system can therefore have low \udr{} while still having catastrophic \ucer{}, because a model may receive protected context without reproducing the canary. \arsr{} measures correct task completion on the 1,000 ordinary authorized requests; \frr{} measures rejection of those requests.
+We define \ucer{} for an unauthorized request as the event that at least one record outside the requesting account's permissions is included in retrieved context. \udr{} is narrower: it detects whether a synthetic, record-specific security marker appears in generated output. A system can therefore have low \udr{} while still have complete \ucer{}, because a model may receive protected context without reproducing the canary. \arsr{} measures correct task completion on ordinary authorized requests; \frr{} measures their rejection.
+
+To quantify reformulation robustness, we additionally define \emph{Structural Boundary Survival Rate} (\sbsr) over an adversarial variant set $Q'$ as
+\begin{equation}
+\sbsr=\frac{1}{|Q'|}\sum_{q\in Q'}\mathbb{1}[\text{structural boundary preserved for }q],
+\end{equation}
+where preservation for an explicit unauthorized target requires denial before retrieval and no unauthorized context exposure. For a heuristic detector with in-distribution detection rate $D_0$ and reformulated/adversarial rate $D_1$, we define \emph{Heuristic Detection Retention} (\hdr) as $D_1/D_0$. Thus \sbsr{} measures boundary invariance, whereas \hdr{} measures retention of wording-dependent suspicion detection. Neither metric implies security against threats outside the stated model.
+
+Finally, the scale study separates total corpus size $N$ from the caller-visible authorization scope $|A_u|$. We define authorization density $\rho_u=|A_u|/N$ and evaluate two regimes: \emph{fixed scope}, where $|A_u|$ is held constant as $N$ grows, and \emph{proportional scope}, where $|A_u|$ grows with $N$. This distinguishes corpus-scale robustness from authorization-domain-scale robustness rather than treating dataset size as a single independent variable.
