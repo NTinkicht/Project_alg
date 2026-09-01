@@ -1,0 +1,488 @@
+name: Structural vs Heuristic Security - Novelty 8 Strengthening
+
+on:
+  push:
+    branches: [structural-heuristic-novelty8]
+  workflow_dispatch:
+
+concurrency:
+  group: healthrag-novelty8-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  TOKENIZERS_PARALLELISM: "false"
+  HF_HUB_DISABLE_TELEMETRY: "1"
+  TRANSFORMERS_VERSION: "4.57.6"
+  SMOL_MODEL: "HuggingFaceTB/SmolLM2-360M-Instruct"
+  SMOL_REVISION: "a10cc1512eabd3dde888204e902eca88bddb4951"
+  QWEN_MODEL: "Qwen/Qwen2.5-0.5B-Instruct"
+  QWEN_REVISION: "7ae557604adf67be50417f59c2c2f167def9a775"
+  CORE_RUN_ID: "33523950201"
+  SCALE_RUN_ID: "33523949995"
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install project, tests, and semantic validator
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[experiment,test]'
+          pip install "transformers==${TRANSFORMERS_VERSION}" 'sentence-transformers>=3,<6'
+          pytest -q
+      - name: Download authoritative core artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: healthrag-audit-revision-artifacts
+          path: baseline/core
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.CORE_RUN_ID }}
+      - name: Download authoritative 1K base artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: scale-base-1k
+          path: baseline/base
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.SCALE_RUN_ID }}
+      - name: Download authoritative scale summary artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: healthrag-scalability-final-artifacts
+          path: baseline/scale
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.SCALE_RUN_ID }}
+      - name: Reconstruct frozen benchmark and validate identity
+        run: |
+          mkdir -p data/processed
+          cp baseline/base/base_records.json data/processed/records.json
+          cp baseline/base/base_authorization.json data/processed/authorization.json
+          cp baseline/base/base_protected.json data/processed/protected_pool.json
+          cp baseline/core/data/processed/test_cases.json data/processed/test_cases.json
+          cp baseline/core/data/processed/heldout_cases.json data/processed/heldout_cases.json
+          cp baseline/core/data/processed/resolution_cases.json data/processed/resolution_cases.json
+          cp baseline/core/data/processed/regression_cases.json data/processed/regression_cases.json
+          cmp baseline/base/test_cases.json data/processed/test_cases.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          records=json.loads(Path('data/processed/records.json').read_text())
+          cases=json.loads(Path('data/processed/test_cases.json').read_text())
+          held=json.loads(Path('data/processed/heldout_cases.json').read_text())
+          assert len(records)==1000
+          assert len(cases)==3000 and sum(not x['is_authorized'] for x in cases)==1750
+          assert len(held)==300
+          print('Frozen benchmark identity and counts validated')
+          PY
+      - name: Generate preregistered adaptive-evasion benchmark
+        run: |
+          python -m healthrag.adaptive_attack \
+            --records data/processed/records.json \
+            --auth data/processed/authorization.json \
+            --out data/processed/adaptive_cases.json \
+            --pairs-out data/processed/adaptive_pairs.json
+      - name: Risk-feature ablation
+        run: |
+          python -m healthrag.risk_ablation \
+            --auth data/processed/authorization.json \
+            --cases data/processed/test_cases.json data/processed/heldout_cases.json data/processed/adaptive_cases.json \
+            --outdir artifacts/risk_ablation
+      - name: Independent encoder semantic-equivalence check
+        run: |
+          python -m healthrag.semantic_validation \
+            --pairs data/processed/adaptive_pairs.json \
+            --model sentence-transformers/all-MiniLM-L6-v2 \
+            --model-revision 1110a24 \
+            --threshold 0.50 --required-fraction 0.95 \
+            --outdir artifacts/semantic_validation
+      - name: Record preparation metadata
+        run: |
+          python - <<'PY'
+          import importlib.metadata as md, json, os
+          from pathlib import Path
+          meta={
+            'repository_commit':os.environ['GITHUB_SHA'],
+            'preregistration':'paper/NOVELTY8_PREREGISTRATION.md',
+            'source_core_run':int(os.environ['CORE_RUN_ID']),
+            'source_scale_run':int(os.environ['SCALE_RUN_ID']),
+            'qwen_model':os.environ['QWEN_MODEL'],'qwen_revision':os.environ['QWEN_REVISION'],
+            'smol_model':os.environ['SMOL_MODEL'],'smol_revision':os.environ['SMOL_REVISION'],
+            'transformers':md.version('transformers'),'torch':md.version('torch'),
+            'sentence_transformers':md.version('sentence-transformers'),'hypothesis':md.version('hypothesis'),
+            'adaptive_cases':200,
+          }
+          Path('artifacts/prepare_metadata.json').write_text(json.dumps(meta,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: novelty8-prepared
+          path: |
+            data/processed/
+            baseline/core/artifacts/results.csv
+            baseline/core/artifacts/controlled_k1.csv
+            baseline/core/artifacts/heldout_results.csv
+            baseline/scale/artifacts/scalability/scalability_summary.csv
+            artifacts/risk_ablation/
+            artifacts/semantic_validation/
+            artifacts/prepare_metadata.json
+          retention-days: 30
+
+  qwen-replication:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[experiment]'
+          pip install "transformers==${TRANSFORMERS_VERSION}"
+      - uses: actions/download-artifact@v4
+        with:
+          name: novelty8-prepared
+          path: prepared
+      - name: Arrange benchmark files
+        run: |
+          mkdir -p data/processed artifacts/qwen
+          cp prepared/data/processed/* data/processed/
+      - name: Qwen primary replication shard
+        run: |
+          python -m healthrag.experiment \
+            --records data/processed/records.json --auth data/processed/authorization.json \
+            --cases data/processed/test_cases.json \
+            --model "$QWEN_MODEL" --model-revision "$QWEN_REVISION" \
+            --shard-index ${{ matrix.shard }} --num-shards 12 \
+            --out artifacts/qwen/qwen_primary_${{ matrix.shard }}.csv
+      - name: Qwen controlled k1 shard
+        run: |
+          python -m healthrag.experiment \
+            --records data/processed/records.json --auth data/processed/authorization.json \
+            --cases data/processed/test_cases.json \
+            --model "$QWEN_MODEL" --model-revision "$QWEN_REVISION" \
+            --legitimate-only --retrieval-k 1 \
+            --shard-index ${{ matrix.shard }} --num-shards 12 \
+            --out artifacts/qwen/qwen_controlled_${{ matrix.shard }}.csv
+      - name: Qwen held-out shard
+        run: |
+          python -m healthrag.experiment \
+            --records data/processed/records.json --auth data/processed/authorization.json \
+            --cases data/processed/heldout_cases.json \
+            --model "$QWEN_MODEL" --model-revision "$QWEN_REVISION" \
+            --shard-index ${{ matrix.shard }} --num-shards 12 \
+            --out artifacts/qwen/qwen_heldout_${{ matrix.shard }}.csv
+      - name: Qwen adaptive-evasion shard
+        run: |
+          python -m healthrag.experiment \
+            --records data/processed/records.json --auth data/processed/authorization.json \
+            --cases data/processed/adaptive_cases.json \
+            --model "$QWEN_MODEL" --model-revision "$QWEN_REVISION" \
+            --shard-index ${{ matrix.shard }} --num-shards 12 \
+            --out artifacts/qwen/qwen_adaptive_${{ matrix.shard }}.csv
+      - name: Independent Qwen semantic judge on source templates
+        if: matrix.shard == 0
+        run: |
+          python -m healthrag.semantic_judge \
+            --pairs data/processed/adaptive_pairs.json \
+            --model "$QWEN_MODEL" --model-revision "$QWEN_REVISION" \
+            --outdir artifacts/qwen/semantic_judge
+      - uses: actions/upload-artifact@v4
+        with:
+          name: novelty8-qwen-${{ matrix.shard }}
+          path: artifacts/qwen/
+          retention-days: 30
+
+  merge-qwen:
+    needs: qwen-replication
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install pandas
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: novelty8-qwen-*
+          path: shards
+          merge-multiple: true
+      - name: Merge and strictly validate Qwen replication
+        run: |
+          mkdir -p artifacts/qwen_complete
+          python - <<'PY'
+          from pathlib import Path
+          import pandas as pd
+          specs={
+            'primary':(9000,3000),
+            'controlled':(3000,1000),
+            'heldout':(900,300),
+            'adaptive':(600,200),
+          }
+          for name,(rows,cases) in specs.items():
+            files=sorted(Path('shards').glob(f'qwen_{name}_*.csv'))
+            assert len(files)==12,(name,len(files))
+            df=pd.concat([pd.read_csv(p) for p in files],ignore_index=True)
+            assert len(df)==rows,(name,len(df))
+            assert df.case_id.nunique()==cases,(name,df.case_id.nunique())
+            assert not df.duplicated(['case_id','architecture']).any(),name
+            assert set(df.architecture)=={'prompt_only','pre_retrieval_acl','risk_aware'}
+            df.sort_values(['case_id','architecture']).to_csv(f'artifacts/qwen_complete/qwen_{name}.csv',index=False)
+          print('Qwen 13,500 architecture executions validated')
+          PY
+          if [ -d shards/semantic_judge ]; then cp -r shards/semantic_judge artifacts/qwen_complete/; fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: novelty8-qwen-complete
+          path: artifacts/qwen_complete/
+          retention-days: 30
+
+  smol-validation:
+    needs: merge-qwen
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[experiment]'
+          pip install "transformers==${TRANSFORMERS_VERSION}"
+      - uses: actions/download-artifact@v4
+        with:
+          name: novelty8-prepared
+          path: prepared
+      - name: Arrange benchmark files
+        run: |
+          mkdir -p data/processed artifacts/smol
+          cp prepared/data/processed/* data/processed/
+      - name: Empirical repeat of authoritative SmolLM2 primary shard 0
+        run: |
+          python -m healthrag.experiment \
+            --records data/processed/records.json --auth data/processed/authorization.json \
+            --cases data/processed/test_cases.json \
+            --model "$SMOL_MODEL" --model-revision "$SMOL_REVISION" \
+            --shard-index 0 --num-shards 12 \
+            --out artifacts/smol/smol_primary_rerun_shard0.csv
+          python -m healthrag.repro_check \
+            --reference prepared/baseline/core/artifacts/results.csv \
+            --rerun artifacts/smol/smol_primary_rerun_shard0.csv \
+            --out artifacts/smol/reproducibility_check.json
+      - name: SmolLM2 adaptive-evasion validation
+        run: |
+          python -m healthrag.experiment \
+            --records data/processed/records.json --auth data/processed/authorization.json \
+            --cases data/processed/adaptive_cases.json \
+            --model "$SMOL_MODEL" --model-revision "$SMOL_REVISION" \
+            --out artifacts/smol/smol_adaptive.csv
+      - uses: actions/upload-artifact@v4
+        with:
+          name: novelty8-smol-validation
+          path: artifacts/smol/
+          retention-days: 30
+
+  scale-llm-complete:
+    needs: smol-validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        shard: [0, 1, 2]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[experiment]'
+          pip install "transformers==${TRANSFORMERS_VERSION}"
+      - name: Download frozen 100K scale corpus
+        uses: actions/download-artifact@v4
+        with:
+          name: healthrag-scale-corpus-100k
+          path: scale_source
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.SCALE_RUN_ID }}
+      - name: Run fresh complete four-mode scale LLM matrix shard
+        run: |
+          mkdir -p artifacts/scale_complete
+          python -m healthrag.scale_llm \
+            --records scale_source/data/scale/records_100k.json \
+            --cases scale_source/data/scale/test_cases.json \
+            --fixed-auth scale_source/data/scale/authorization_fixed.json \
+            --scale-dir scale_source/data/scale \
+            --model "$SMOL_MODEL" --model-revision "$SMOL_REVISION" \
+            --queries 90 --shard-index ${{ matrix.shard }} --num-shards 3 \
+            --modes unfiltered,acl_fixed,acl_proportional,target_fixed \
+            --policy-prompt compact_postauth \
+            --out artifacts/scale_complete/scale_complete_${{ matrix.shard }}.csv
+      - uses: actions/upload-artifact@v4
+        with:
+          name: novelty8-scale-${{ matrix.shard }}
+          path: artifacts/scale_complete/
+          retention-days: 30
+
+  merge-scale:
+    needs: scale-llm-complete
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install pandas
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: novelty8-scale-*
+          path: scale_shards
+          merge-multiple: true
+      - name: Merge and strictly validate 1,080 scale generations
+        run: |
+          mkdir -p artifacts/scale_complete
+          python - <<'PY'
+          from pathlib import Path
+          import pandas as pd
+          files=sorted(Path('scale_shards').glob('scale_complete_*.csv'))
+          assert len(files)==3,files
+          df=pd.concat([pd.read_csv(p) for p in files],ignore_index=True)
+          assert len(df)==1080,len(df)
+          assert df.case_id.nunique()==90
+          assert not df.duplicated(['case_id','scale','mode']).any()
+          assert set(df['scale'])=={1000,10000,100000}
+          assert set(df['mode'])=={'unfiltered','acl_fixed','acl_proportional','target_fixed'}
+          assert set(df['policy_prompt'])=={'compact_postauth'}
+          df.sort_values(['case_id','scale','mode']).to_csv('artifacts/scale_complete/scale_llm_complete.csv',index=False)
+          print(df.groupby(['scale','mode']).size())
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: novelty8-scale-complete
+          path: artifacts/scale_complete/
+          retention-days: 30
+
+  finalize-novelty8:
+    needs: [prepare, merge-qwen, smol-validation, merge-scale]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[test]'
+      - uses: actions/download-artifact@v4
+        with:
+          name: novelty8-prepared
+          path: prepared
+      - uses: actions/download-artifact@v4
+        with:
+          name: novelty8-qwen-complete
+          path: qwen
+      - uses: actions/download-artifact@v4
+        with:
+          name: novelty8-smol-validation
+          path: smol
+      - uses: actions/download-artifact@v4
+        with:
+          name: novelty8-scale-complete
+          path: scale_complete
+      - name: Analyze structural-vs-heuristic findings with cluster-aware inference
+        run: |
+          python -m healthrag.novelty_analysis \
+            --smol-primary prepared/baseline/core/artifacts/results.csv \
+            --smol-controlled prepared/baseline/core/artifacts/controlled_k1.csv \
+            --smol-heldout prepared/baseline/core/artifacts/heldout_results.csv \
+            --smol-adaptive smol/smol_adaptive.csv \
+            --qwen-primary qwen/qwen_primary.csv \
+            --qwen-controlled qwen/qwen_controlled.csv \
+            --qwen-heldout qwen/qwen_heldout.csv \
+            --qwen-adaptive qwen/qwen_adaptive.csv \
+            --risk-ablation prepared/artifacts/risk_ablation/risk_ablation_decisions.csv \
+            --adaptive-pairs prepared/data/processed/adaptive_pairs.json \
+            --scale-complete scale_complete/scale_llm_complete.csv \
+            --scale-retrieval-summary prepared/baseline/scale/artifacts/scalability/scalability_summary.csv \
+            --outdir artifacts/novelty8
+      - name: Final validation and reproducibility manifest
+        run: |
+          python - <<'PY'
+          import hashlib, importlib.metadata as md, json, os
+          from pathlib import Path
+          import pandas as pd
+          q={name:pd.read_csv(f'qwen/qwen_{name}.csv') for name in ['primary','controlled','heldout','adaptive']}
+          assert [len(q[x]) for x in ['primary','controlled','heldout','adaptive']]==[9000,3000,900,600]
+          assert len(pd.read_csv('smol/smol_adaptive.csv'))==600
+          assert len(pd.read_csv('scale_complete/scale_llm_complete.csv'))==1080
+          assert Path('smol/reproducibility_check.json').exists()
+          repro=json.loads(Path('smol/reproducibility_check.json').read_text())
+          assert repro['exact_match'] is True
+          files=[
+            'artifacts/novelty8/novelty8_metrics.json',
+            'artifacts/novelty8/scale_llm_complete_summary.csv',
+            'artifacts/novelty8/authorization_density.csv',
+            'prepared/artifacts/risk_ablation/risk_ablation_metrics.json',
+            'prepared/artifacts/semantic_validation/adaptive_semantic_metrics.json',
+            'smol/reproducibility_check.json',
+          ]
+          checks={}
+          for f in files:
+            p=Path(f); checks[f]=hashlib.sha256(p.read_bytes()).hexdigest()
+          meta={
+            'repository_commit':os.environ['GITHUB_SHA'],
+            'source_core_run':int(os.environ['CORE_RUN_ID']),
+            'source_scale_run':int(os.environ['SCALE_RUN_ID']),
+            'preregistration':'paper/NOVELTY8_PREREGISTRATION.md',
+            'models':{
+              'smol':{'name':os.environ['SMOL_MODEL'],'revision':os.environ['SMOL_REVISION']},
+              'qwen':{'name':os.environ['QWEN_MODEL'],'revision':os.environ['QWEN_REVISION']},
+            },
+            'software':{'python':os.sys.version,'pandas':md.version('pandas'),'numpy':md.version('numpy'),'scipy':md.version('scipy')},
+            'planned_architecture_executions':{'qwen_replication':13500,'smol_adaptive':600,'smol_repro_shard':750,'fresh_scale_llm':1080},
+            'adaptive_cases':200,
+            'scale_llm_design':'90 fixed legitimate queries x 3 scales x 4 modes under byte-identical compact post-authorization system policy prompt',
+            'checksums':checks,
+          }
+          Path('artifacts/novelty8/reproducibility_manifest.json').write_text(json.dumps(meta,indent=2))
+          PY
+          mkdir -p artifacts/final
+          cp -r artifacts/novelty8 artifacts/final/
+          cp -r prepared/artifacts/risk_ablation artifacts/final/
+          cp -r prepared/artifacts/semantic_validation artifacts/final/
+          cp -r qwen/semantic_judge artifacts/final/ 2>/dev/null || true
+          cp smol/reproducibility_check.json artifacts/final/
+          cp smol/smol_adaptive.csv artifacts/final/
+          cp qwen/qwen_primary.csv qwen/qwen_controlled.csv qwen/qwen_heldout.csv qwen/qwen_adaptive.csv artifacts/final/
+          cp scale_complete/scale_llm_complete.csv artifacts/final/
+          cp prepared/data/processed/adaptive_cases.json prepared/data/processed/adaptive_pairs.json artifacts/final/
+          cp paper/NOVELTY8_PREREGISTRATION.md artifacts/final/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: healthrag-structural-heuristic-novelty8-artifacts
+          path: artifacts/final/
+          retention-days: 30
