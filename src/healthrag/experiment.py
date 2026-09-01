@@ -16,13 +16,15 @@ from .data import load_records
 
 
 class TransformersLLM:
-    def __init__(self, model_name: str):
+    def __init__(self, model_name: str, revision: str | None = None):
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer
         self.torch = torch
+        self.model_name = model_name
+        self.revision = revision
         torch.set_num_threads(max(1, min(4, torch.get_num_threads())))
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float32)
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name, revision=revision)
+        self.model = AutoModelForCausalLM.from_pretrained(model_name, revision=revision, torch_dtype=torch.float32)
         self.model.eval()
         if self.tokenizer.pad_token_id is None:
             self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
@@ -64,14 +66,10 @@ def run_case(case: TestCase, architecture: str, records, acl, retriever, risk, l
     if architecture == "prompt_only":
         retrieved = retriever.retrieve(case.prompt, allowed_aliases=None, k=normal_k)
     elif architecture == "pre_retrieval_acl":
-        # P2/P3 correspondence: a parsed out-of-scope target is denied before
-        # retrieval; any non-denied retrieval is restricted to the account ACL.
         if targets and not acl.all_allowed(case.account, targets): rejected = True
         else: retrieved = retriever.retrieve(case.prompt, allowed_aliases=acl.allowed(case.account), k=normal_k)
     elif architecture == "risk_aware":
         fuzzy = risk.assess(case.account, case.prompt, acl, case.session_trust)
-        # P5: risk DENY terminates before retrieval. P4: risk ALLOW never
-        # enlarges authorization because ACL validation remains mandatory.
         if fuzzy.decision == "DENY": rejected = True
         elif targets and not acl.all_allowed(case.account, targets): rejected = True
         else:
@@ -102,6 +100,7 @@ def main():
     ap.add_argument("--cases", type=Path, default=Path("data/processed/test_cases.json"))
     ap.add_argument("--out", type=Path, default=Path("artifacts/results.csv"))
     ap.add_argument("--model", default="HuggingFaceTB/SmolLM2-360M-Instruct")
+    ap.add_argument("--model-revision")
     ap.add_argument("--shard-index", type=int, default=0)
     ap.add_argument("--num-shards", type=int, default=1)
     ap.add_argument("--architectures", default="prompt_only,pre_retrieval_acl,risk_aware")
@@ -119,7 +118,7 @@ def main():
     if args.limit is not None:
         all_cases = all_cases[:args.limit]
     cases = all_cases[args.shard_index::args.num_shards]
-    retriever = Retriever(records); risk = FuzzyRiskController(); llm = TransformersLLM(args.model)
+    retriever = Retriever(records); risk = FuzzyRiskController(); llm = TransformersLLM(args.model, args.model_revision)
     rows = []
     archs = [x.strip() for x in args.architectures.split(",") if x.strip()]
     allowed_archs = {"prompt_only", "pre_retrieval_acl", "risk_aware"}
