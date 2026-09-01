@@ -1,0 +1,293 @@
+name: HealthRAG 100K Retrieval Scalability
+
+on:
+  push:
+    branches: [audit-revision-100k]
+  workflow_dispatch:
+
+concurrency:
+  group: healthrag-scalability-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  TOKENIZERS_PARALLELISM: "false"
+  HF_HUB_DISABLE_TELEMETRY: "1"
+  MODEL_NAME: HuggingFaceTB/SmolLM2-360M-Instruct
+
+jobs:
+  base-1k:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[experiment,test]'
+          pytest -q
+      - uses: actions/checkout@v4
+        with:
+          repository: synthetichealth/synthea
+          ref: v4.0.0
+          path: _synthea
+      - name: Generate exact validated 1K base population
+        working-directory: _synthea
+        run: |
+          ./run_synthea -s 4103 -p 1000 -r 20260101 \
+            --exporter.baseDirectory="$GITHUB_WORKSPACE/data/base_generated" \
+            --exporter.fhir.export=true \
+            --exporter.fhir.transaction_bundle=true \
+            --generate.log_patients.detail=none Massachusetts
+      - name: Normalize exact base and regenerate fixed queries
+        run: |
+          python -m healthrag.data --fhir-dir data/base_generated/fhir --count 1000 --out data/base
+          python -m healthrag.prompts --records data/base/records.json --auth data/base/authorization.json \
+            --out data/base/test_cases.json --regression-out data/base/regression_cases.json \
+            --heldout-out data/base/heldout_cases.json --resolution-out data/base/resolution_cases.json
+          mkdir -p artifacts/base
+          cp data/base/records.json artifacts/base/base_records.json
+          cp data/base/authorization.json artifacts/base/base_authorization.json
+          cp data/base/protected_pool.json artifacts/base/base_protected.json
+          cp data/base/test_cases.json artifacts/base/test_cases.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scale-base-1k
+          path: artifacts/base/
+          retention-days: 30
+
+  extra-synthea:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      max-parallel: 11
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+      - uses: actions/checkout@v4
+        with:
+          repository: synthetichealth/synthea
+          ref: v4.0.0
+          path: _synthea
+      - name: Generate deterministic extra Synthea shard
+        working-directory: _synthea
+        run: |
+          SEED=$((5103 + ${{ matrix.shard }}))
+          echo "Generating shard ${{ matrix.shard }} with seed $SEED"
+          ./run_synthea -s "$SEED" -p 9100 -r 20260101 \
+            --exporter.baseDirectory="$GITHUB_WORKSPACE/data/scale_generated_${{ matrix.shard }}" \
+            --exporter.fhir.export=true \
+            --exporter.fhir.transaction_bundle=true \
+            --generate.log_patients.detail=none Massachusetts
+      - name: Normalize 9,050 candidates from shard
+        run: |
+          python -m healthrag.data \
+            --fhir-dir data/scale_generated_${{ matrix.shard }}/fhir \
+            --count 9050 \
+            --out data/scale_processed_${{ matrix.shard }}
+          mkdir -p artifacts
+          cp data/scale_processed_${{ matrix.shard }}/records.json artifacts/scale_shard_${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scale-extra-${{ matrix.shard }}
+          path: artifacts/scale_shard_${{ matrix.shard }}.json
+          retention-days: 30
+
+  merge-and-retrieval-scale:
+    needs: [base-1k, extra-synthea]
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[experiment,test]'
+      - uses: actions/download-artifact@v4
+        with:
+          name: scale-base-1k
+          path: artifacts/base
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: scale-extra-*
+          path: artifacts/extras
+          merge-multiple: true
+      - name: Merge exact base plus deterministic extras into nested 100K master
+        run: |
+          python -m healthrag.scale_data \
+            --base-records artifacts/base/base_records.json \
+            --base-auth artifacts/base/base_authorization.json \
+            --base-protected artifacts/base/base_protected.json \
+            --extra-dir artifacts/extras \
+            --outdir data/scale
+          cp artifacts/base/test_cases.json data/scale/test_cases.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          records=json.loads(Path('data/scale/records_100k.json').read_text())
+          assert len(records)==100000
+          assert len({r['patient_id'] for r in records})==100000
+          assert len({r['alias'] for r in records})==100000
+          assert records[0]['alias']=='PAT-0001'
+          assert records[999]['alias']=='PAT-1000'
+          print('100K nested master validated')
+          PY
+      - name: Run zero-LLM paired retrieval scalability study
+        run: |
+          python -m healthrag.scalability \
+            --records data/scale/records_100k.json \
+            --cases data/scale/test_cases.json \
+            --fixed-auth data/scale/authorization_fixed.json \
+            --scale-dir data/scale \
+            --queries 400 \
+            --outdir artifacts/scalability
+      - uses: actions/upload-artifact@v4
+        with:
+          name: healthrag-scale-corpus-100k
+          path: |
+            data/scale/records_100k.json
+            data/scale/test_cases.json
+            data/scale/authorization_fixed.json
+            data/scale/protected_fixed.json
+            data/scale/authorization_proportional_1000.json
+            data/scale/authorization_proportional_10000.json
+            data/scale/authorization_proportional_100000.json
+            data/scale/protected_proportional_1000.json
+            data/scale/protected_proportional_10000.json
+            data/scale/protected_proportional_100000.json
+            data/scale/scale_manifest.json
+            artifacts/scalability/scalability_results.csv
+            artifacts/scalability/scalability_summary.csv
+            artifacts/scalability/scalability_stats.json
+          retention-days: 30
+
+  scale-llm-validation:
+    needs: merge-and-retrieval-scale
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        shard: [0, 1, 2]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[experiment]'
+      - uses: actions/download-artifact@v4
+        with:
+          name: healthrag-scale-corpus-100k
+          path: scale_artifact
+      - name: Arrange scale corpus paths
+        run: |
+          mkdir -p data/scale
+          cp scale_artifact/data/scale/* data/scale/
+      - name: Run fixed-query LLM validation across 1K, 10K, 100K
+        run: |
+          python -m healthrag.scale_llm \
+            --records data/scale/records_100k.json \
+            --cases data/scale/test_cases.json \
+            --fixed-auth data/scale/authorization_fixed.json \
+            --model "$MODEL_NAME" \
+            --queries 90 \
+            --shard-index ${{ matrix.shard }} \
+            --num-shards 3 \
+            --out artifacts/scale_llm_${{ matrix.shard }}.csv
+      - uses: actions/upload-artifact@v4
+        with:
+          name: healthrag-scale-llm-${{ matrix.shard }}
+          path: artifacts/scale_llm_${{ matrix.shard }}.csv
+          retention-days: 30
+
+  finalize-scale-analysis:
+    needs: scale-llm-validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[experiment,test]'
+      - uses: actions/download-artifact@v4
+        with:
+          name: healthrag-scale-corpus-100k
+          path: scale_artifact
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: healthrag-scale-llm-*
+          path: artifacts/scale_llm_shards
+          merge-multiple: true
+      - name: Merge and validate scale LLM results
+        run: |
+          mkdir -p artifacts/scalability
+          cp scale_artifact/artifacts/scalability/* artifacts/scalability/
+          python - <<'PY'
+          from pathlib import Path
+          import pandas as pd
+          files=sorted(Path('artifacts/scale_llm_shards').glob('scale_llm_*.csv'))
+          assert len(files)==3, files
+          df=pd.concat([pd.read_csv(p) for p in files],ignore_index=True)
+          assert len(df)==810, len(df)
+          assert df.case_id.nunique()==90
+          assert not df.duplicated(['case_id','scale','mode']).any()
+          assert set(df['scale'])=={1000,10000,100000}
+          assert set(df['mode'])=={'unfiltered','acl_fixed','target_fixed'}
+          df.sort_values(['case_id','scale','mode']).to_csv('artifacts/scalability/scale_llm_results.csv',index=False)
+          print(df.groupby(['scale','mode']).size())
+          PY
+          python -m healthrag.scale_llm_analysis
+      - name: Record scale reproducibility metadata
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          meta={
+            'repository_commit':os.environ.get('GITHUB_SHA'),
+            'synthea_version':'v4.0.0','reference_date':'20260101','state':'Massachusetts',
+            'base_seed':4103,'extra_seeds':[5103+i for i in range(11)],
+            'master_patients':100000,'nested_scales':[1000,10000,100000],
+            'retrieval_queries_per_scale':400,
+            'retrieval_modes':['unfiltered','acl_fixed','acl_proportional','target_fixed','target_proportional'],
+            'scale_llm_base_queries':90,'scale_llm_executions':810,
+            'scale_llm_modes':['unfiltered','acl_fixed','target_fixed'],
+            'representation':'single TF-IDF(1,2) float32 fit on 100K master; candidate rows restricted per condition',
+            'model':os.environ['MODEL_NAME'],'decoding':'greedy/do_sample=False','max_new_tokens':64,
+          }
+          Path('artifacts/scalability/scale_reproducibility.json').write_text(json.dumps(meta,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: healthrag-scalability-final-artifacts
+          path: |
+            artifacts/scalability/
+            scale_artifact/data/scale/scale_manifest.json
+          retention-days: 30
