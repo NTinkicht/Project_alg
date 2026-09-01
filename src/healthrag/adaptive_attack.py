@@ -11,7 +11,7 @@ from .data import load_records
 from .prompts import ACCOUNTS, ATTACK_TEMPLATES, SUSPICIOUS_TEMPLATES, session_trust
 
 # Semantics-preserving substitutions are intentionally transparent and frozen in
-# source control.  The search is not an LLM paraphraser: it is a black-box
+# source control. The search is not an LLM paraphraser: it is a black-box
 # optimizer over a finite mutation set whose objective is to reduce the frozen
 # lexical risk detector while preserving the target and disclosure intent.
 REPLACEMENTS: tuple[tuple[str, str], ...] = (
@@ -49,8 +49,7 @@ REPLACEMENTS: tuple[tuple[str, str], ...] = (
     ("encode", "provide"),
 )
 
-ACTION_TERMS = ("provide", "show", "reveal", "disclose", "supply", "release", "return", "display", "reproduce", "print")
-SCOPE_TERMS = ("all", "every", "complete", "entire", "source", "record", "field", "detail", "data", "material", "marker")
+ACTION_TERMS = ("provide", "show", "reveal", "disclose", "supply", "release", "return", "display", "reproduce", "print", "expose", "echo")
 
 
 def normalized_template(prompt: str) -> str:
@@ -60,9 +59,8 @@ def normalized_template(prompt: str) -> str:
 def evasion_objective(prompt: str) -> tuple[float, float, int]:
     """Lexicographic black-box objective: injection risk, then sensitivity.
 
-    Length is a deterministic tie-breaker only.  The primary objective therefore
-    matches the detector-evasion threat model rather than optimizing downstream
-    LLM behavior.
+    Length is a deterministic tie-breaker only. The primary objective therefore
+    matches detector evasion rather than optimizing downstream LLM behavior.
     """
     return (
         float(FuzzyRiskController.prompt_injection_risk(prompt)),
@@ -72,13 +70,22 @@ def evasion_objective(prompt: str) -> tuple[float, float, int]:
 
 
 def structural_intent_preserved(original: str, candidate: str, target: str) -> bool:
+    """Transparent necessary conditions for preserving disclosure intent.
+
+    Some original attack templates simply say "reveal PAT-x" and therefore do
+    not contain an explicit breadth token such as "record" or "all". Requiring
+    such a token would selectively drop those templates. We instead require the
+    same patient target, an affirmative disclosure verb, and absence of an
+    introduced refusal/negation. Independent encoder and LLM-judge checks are
+    performed separately by the workflow.
+    """
     c = candidate.lower()
     return (
         target.upper() in candidate.upper()
         and any(term in c for term in ACTION_TERMS)
-        and any(term in c for term in SCOPE_TERMS)
         and "do not provide" not in c
         and "do not disclose" not in c
+        and "do not reveal" not in c
         and "refuse" not in c
     )
 
@@ -88,12 +95,7 @@ def _case_insensitive_replace(text: str, src: str, dst: str) -> str:
 
 
 def hill_climb_evasion(prompt: str, target: str) -> tuple[str, list[dict]]:
-    """Greedy finite-neighborhood search against the frozen heuristic.
-
-    Every accepted mutation must preserve a transparent syntactic disclosure-
-    intent predicate and strictly improve the lexicographic objective.  This is
-    deliberately simple enough to reproduce exactly and does not query an LLM.
-    """
+    """Greedy finite-neighborhood search against the frozen heuristic."""
     current = prompt
     trace: list[dict] = []
     while True:
@@ -145,8 +147,6 @@ def generate_adaptive_cases(records, acl: AuthorizationMatrix, seed: int = 15403
     pairs: list[dict] = []
     cid = 1
 
-    # Authorized-but-suspicious requests isolate heuristic behavior because the
-    # structural ACL itself permits the target.
     for i in range(100):
         account = ACCOUNTS[i % 4]
         target = _allowed_target(account, acl, i * 37 + 5)
@@ -170,8 +170,6 @@ def generate_adaptive_cases(records, acl: AuthorizationMatrix, seed: int = 15403
         })
         cid += 1
 
-    # Unauthorized requests use the full attack-template family.  The optimizer
-    # attacks only wording; the target/account relationship remains unauthorized.
     for i in range(100):
         account = ACCOUNTS[(i + 1) % 4] if i % 10 else "E"
         target = _other_target(account, acl, aliases, i * 41 + 9)
@@ -200,7 +198,6 @@ def generate_adaptive_cases(records, acl: AuthorizationMatrix, seed: int = 15403
     order = list(range(len(cases)))
     rng.shuffle(order)
     cases = [cases[i] for i in order]
-    # Keep pair metadata keyed by case id; ordering is not semantically relevant.
     return cases, pairs
 
 
