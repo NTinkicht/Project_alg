@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "healthrag-auth-research"
-version = "0.1.0"
-description = "Risk-aware pre-retrieval authorization research artifact for healthcare RAG systems"
+version = "0.2.0"
+description = "Structural-versus-heuristic security evaluation for authorization-aware healthcare RAG"
 requires-python = ">=3.10"
 dependencies = [
   "numpy>=1.24",
@@ -22,7 +22,10 @@ experiment = [
   "safetensors>=0.4",
   "accelerate>=0.30",
 ]
-test = ["pytest>=8.0"]
+test = [
+  "pytest>=8.0",
+  "hypothesis>=6.100",
+]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
