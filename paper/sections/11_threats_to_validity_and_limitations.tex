@@ -1,0 +1,12 @@
+\section{Threats to Validity and Limitations}
+\textbf{Synthetic data and model choice.} Synthea enables reproducibility and avoids real-patient exposure, but synthetic records do not capture every property of production EHRs. SmolLM2-360M-Instruct is intentionally lightweight; leakage and utility behavior may differ for larger proprietary models. The work evaluates systems/security behavior, not clinical correctness.
+
+\textbf{Prompt families and pseudoreplication.} The benchmark contains many target instantiations of relatively few templates. Case-level exact tests are useful for paired software behavior but overstate the number of independent attack strategies. The concentration of all five canary leaks in one 50-case template illustrates this dependence. Future work should preregister larger, independently authored attack families or use cluster-aware analysis.
+
+\textbf{Canary disclosure is narrow.} \udr{} detects a synthetic marker, not every possible semantic disclosure of protected information. A zero canary count cannot establish zero disclosure risk. \ucer{} is therefore the primary security outcome because it measures boundary crossing directly.
+
+\textbf{Authorization assumptions.} The ACL is treated as authoritative, and the benchmark starts after principal resolution. Stolen credentials, identity-provider errors, ACL misconfiguration, insider misuse, and cross-tenant policy administration are not modeled.
+
+\textbf{Risk scoring.} Both fuzzy membership boundaries and deterministic thresholds are hand-tuned. The held-out result shows that lexical heuristics fail to generalize to paraphrased suspicious-but-authorized requests. Learned detectors could improve recall but would introduce their own calibration, drift, and explainability concerns. The structural ACL should remain the boundary regardless of detector choice.
+
+\textbf{Scale controls.} Fixed-ACL and target-fixed LLM conditions are constant-context controls by construction. The proportional ACL condition reaches 20,000 authorized candidates at 100K in the retrieval study, but was not run through the LLM subset. Accordingly, we make no generation-level statement about proportional authorization-scope growth.
