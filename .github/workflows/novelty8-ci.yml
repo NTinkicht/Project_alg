@@ -5,6 +5,10 @@ on:
     branches: [novelty-8-structural-heuristic]
   workflow_dispatch:
 
+concurrency:
+  group: novelty8-validation-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
