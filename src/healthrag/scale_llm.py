@@ -21,10 +21,10 @@ def compact_postauth_prompt(context: str) -> str:
     """Scale-study prompt that holds policy-prompt length constant.
 
     The scale study is a utility/retrieval-composition experiment, not a second
-    authorization-correctness benchmark.  Listing 20,000 proportional aliases in
-    the system prompt would make prompt length a severe confound.  This compact
-    prompt therefore states that authorization has already been enforced and is
-    kept byte-identical across scale and candidate-scope conditions.
+    authorization-correctness benchmark. Listing 20,000 proportional aliases in
+    the system prompt would make prompt length a severe confound. This compact
+    prompt states that authorization has already been enforced and is kept
+    byte-identical across scale and candidate-scope conditions.
     """
     return (
         "You are a healthcare record assistant in a retrieval utility evaluation. "
@@ -42,6 +42,7 @@ def main():
     ap.add_argument("--fixed-auth", type=Path, default=Path("data/scale/authorization_fixed.json"))
     ap.add_argument("--scale-dir", type=Path, default=Path("data/scale"))
     ap.add_argument("--model", default="HuggingFaceTB/SmolLM2-360M-Instruct")
+    ap.add_argument("--model-revision")
     ap.add_argument("--queries", type=int, default=90)
     ap.add_argument("--shard-index", type=int, default=0)
     ap.add_argument("--num-shards", type=int, default=1)
@@ -62,7 +63,7 @@ def main():
     fixed_map = json.loads(args.fixed_auth.read_text())
     fixed_acl = AuthorizationMatrix(fixed_map)
     index = ScaleIndex(records)
-    llm = TransformersLLM(args.model)
+    llm = TransformersLLM(args.model, args.model_revision)
 
     rows = []
     for ci, case in enumerate(selected, 1):
@@ -99,6 +100,8 @@ def main():
                     "scale": scale,
                     "mode": mode,
                     "policy_prompt": args.policy_prompt,
+                    "model": args.model,
+                    "model_revision": args.model_revision,
                     "retrieved_aliases": r["retrieved_aliases"],
                     "candidate_count": r.get("candidate_count"),
                     "target_rank": r["target_rank"],
