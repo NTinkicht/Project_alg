@@ -1,0 +1,65 @@
+\section{Data, Architectures, and Preregistered Design}
+\subsection{Synthetic healthcare corpus}
+We use Synthea v4.0.0 because it provides distributable synthetic electronic health records without real-patient privacy risk \cite{walonoski2018synthea}. The deterministic base population contains 1,000 patients. Four accounts receive 200 patients each, 200 records form a protected pool, and a fifth account has no permissions. The primary benchmark contains 3,000 cases: 1,000 authorized normal, 1,000 direct unauthorized, 250 authorized suspicious, and 750 additional adversarial unauthorized prompts distributed across injection, privilege/debug, context extraction, role-play/obfuscation, and multi-step families. There are 1,750 unauthorized cases.
+
+\subsection{Architectures}
+\textbf{Prompt-only} retrieves globally and places policy instructions in the prompt. \textbf{Pre-retrieval ACL} restricts candidate records to the authenticated caller's authorized set before retrieval. \textbf{Risk-aware} preserves the same ACL boundary and adds a risk decision before retrieval/generation. Because the risk layer is subordinate, it is allowed to narrow access or request confirmation but not widen the ACL.
+
+\subsection{Models and decoding}
+The original study uses HuggingFaceTB/SmolLM2-360M-Instruct at revision \texttt{a10cc151...}. Cross-model replication uses Qwen/Qwen2.5-0.5B-Instruct at revision \texttt{7ae557604...}. All novelty experiments use Transformers 4.57.6, float32 CPU inference, evaluation mode, greedy decoding (\texttt{do\_sample=False}), and 64 new tokens. Model choice and revisions were frozen before the strengthening workflow ran.
+
+\subsection{Adaptive evasion}
+The preregistered adaptive set contains 100 suspicious authorized and 100 unauthorized requests. A deterministic finite substitution neighborhood greedily minimizes the frozen lexical injection-risk score and then sensitivity, while preserving the target and affirmative disclosure intent. The attack does not query model outputs while searching, so the optimization directly probes the heuristic feature rather than tuning to generation outcomes.
+
+Semantic preservation is checked independently in two ways. A pinned sentence encoder evaluates all 200 pairs against a preregistered cosine threshold of 0.50. Separately, pinned Qwen judges one representative per source template (19 total) using a binary semantic-equivalence instruction. Neither is labeled as human annotation.
+
+\subsection{Feature ablations and implementation correspondence}
+The risk controller uses authorization confidence, injection risk, sensitivity, and session trust. We neutralize one feature at a time with frozen benign values and rerun both fuzzy and deterministic controllers over primary, held-out, and adaptive sets. This analysis is mechanistic; no feature is removed after observing outcomes.
+
+The existing NuSMV abstraction remains a model of the intended secured state machine rather than a proof of Python. We strengthen correspondence with Hypothesis property-based tests over randomized ACL/target/trust combinations, asserting that prefiltered retrieval is an ACL subset, out-of-scope explicit targets terminate before generation, the risk layer cannot widen access, adaptive mutations preserve target identity, and authorization confidence is wording-invariant for a fixed authorized target.
+
+\subsection{Scale experiment}
+The fresh generation matrix fixes 90 legitimate queries and evaluates corpus sizes 1K, 10K, and 100K under four modes: unfiltered, ACL-fixed, ACL-proportional, and target-fixed. All modes use the same compact post-authorization policy prompt to avoid confounding proportional ACL size with a massive list of aliases in the system prompt. This yields $90\times3\times4=1{,}080$ fresh generations. ACL-fixed retains 200 candidates at every scale; ACL-proportional grows from 200 to 2,000 to 20,000; target-fixed exposes one target record.
+
+\section{Research Questions and Analysis Protocol}
+The strengthening study was preregistered on the experiment branch before its first execution. The registration fixed the structural/heuristic definitions, adaptive mutation neighborhood, semantic thresholds, second model and revision, four scale modes, cluster unit, bootstrap draws and seed, ablation substitutions, and outcome-independent stopping rule. In particular, no new attack family, model, threshold, or confirmatory leak experiment could be added after observing a favorable or unfavorable result. Technical reruns were allowed only to recover from execution defects or to test the explicitly planned reproducibility repeat.
+
+\textbf{RQ1: Structural versus heuristic robustness.} We compare a policy-state boundary with request-derived suspicion triage under three distributions: the original primary benchmark, lexically disjoint held-out prompts, and detector-targeted adaptive mutations. The primary confirmatory contrast is not ``which detector wins,'' but whether the structural boundary and heuristic recognition exhibit different retention under distribution shift. We report \sbsr{} for unauthorized requests and \hdr{} for suspicious authorized requests. The latter is intentionally normalized to each controller's own primary rate so that a controller is not rewarded merely for having a higher initial challenge threshold.
+
+\textbf{RQ2: Cross-model replication.} We repeat the primary, controlled-$k=1$, held-out, and adaptive benchmark with Qwen2.5-0.5B-Instruct. The preregistration explicitly permits disagreement: Qwen is a replication target, not a tuning target. A security conclusion is called structural only when it follows from pre-generation context eligibility and reproduces independently of the model's willingness to disclose.
+
+\textbf{RQ3: Fixed versus proportional authorization scope.} We distinguish the global corpus $|C|$ from the caller-visible set $|A|$. Three scale points are evaluated with a globally fitted retrieval representation, avoiding vocabulary/IDF drift across nested corpus sizes. ACL-fixed keeps $|A|=200$; ACL-proportional keeps approximately $\rho=0.2$; target-fixed keeps $|A|=1$; unfiltered uses all of $C$. The scale study is a systems/utility experiment rather than a test of whether ACL correctness improves with scale.
+
+\textbf{RQ4: Mechanistic feature contribution.} We neutralize each risk-controller feature independently. Authorization confidence is replaced with 0.95, injection risk with 0.0, sensitivity with 0.35, and session trust with 0.95. Because the substitutions were frozen before execution, the resulting decision changes can be interpreted as planned local mechanism probes rather than post-hoc model surgery.
+
+\begin{table}[t]
+\caption{Strengthening-study execution matrix.}
+\label{tab:matrix}
+\centering
+\small
+\begin{tabular}{lrrr}
+\toprule
+Experiment & Cases & Architectures/modes & Rows\\
+\midrule
+Qwen primary & 3,000 & 3 & 9,000\\
+Qwen controlled $k=1$ & 1,000 & 3 & 3,000\\
+Qwen held-out & 300 & 3 & 900\\
+Qwen adaptive & 200 & 3 & 600\\
+Smol adaptive & 200 & 3 & 600\\
+Smol exact-repeat shard & 250 & 3 & 750\\
+Fresh scale generation & 270 & 4 & 1,080\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Pairing, clustering, and uncertainty}
+Every architecture comparison is paired by case identifier. However, the 3,000-case primary benchmark is generated from a smaller set of attack/request templates instantiated with different targets. Treating all target substitutions as independent attack strategies would therefore produce pseudoreplication. We address this explicitly in three layers. First, case-level counts remain visible because they describe actual executions and preserve continuity with the original experiment. Second, security differences are re-estimated by resampling complete source templates as clusters. Third, a paired sign test reports whether the direction of an architecture difference is consistent across nonzero templates without pretending the magnitudes are normally distributed.
+
+For utility differences we use paired nonparametric bootstrap confidence intervals with 20,000 draws and fixed seed 4103. For cluster security inference, whole templates are sampled with replacement and paired differences are recomputed per draw. This does not magically create more independent attack strategies; rather, it prevents the precision estimate from being dominated by target-level repetition. We accordingly interpret the five original Smol canary leaks as one leaking multi-step strategy instantiated five times, not as five independent discoveries.
+
+The study also distinguishes \emph{observed zero} from \emph{proved zero}. A zero numerator in a finite synthetic benchmark supports a bounded empirical claim only. The stronger structural interpretation arises from the fact that the secured retriever constructs candidates from the authorized set and from randomized correspondence tests that assert the subset invariant. It still does not cover compromised identity, corrupted authorization metadata, implementation flaws outside the tested path, or other channels.
+
+\subsection{Metric semantics}
+\ucer{} and \udr{} deliberately answer different questions. \ucer{} is a data-plane exposure metric: was unauthorized content made available to the language model? \udr{} is an observed output metric: did the model emit a narrow synthetic marker? A low \udr{} can result from refusal, weak instruction following, token truncation, or chance, none of which erase prior context exposure. Conversely, a zero \ucer{} in the modeled path blocks the tested direct disclosure route because the protected record is absent from model context, though it does not exclude leakage from model parameters or other external channels.
+
+For scale experiments, \arsr{} is evaluated on the same 90 queries in every cell. Retrieval latency is measured separately from generation latency because generation dominates absolute wall-clock time on CPU and can mask differences in candidate search. Candidate count and authorization density are therefore reported alongside \arsr{}, allowing the reader to distinguish retrieval-system scaling from model-generation variance.
