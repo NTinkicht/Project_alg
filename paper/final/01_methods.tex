@@ -8,8 +8,10 @@ We use Synthea v4.0.0 because it provides distributable synthetic electronic hea
 \subsection{Models and decoding}
 The original study uses HuggingFaceTB/SmolLM2-360M-Instruct at revision \texttt{a10cc151...}. Cross-model replication uses Qwen/Qwen2.5-0.5B-Instruct at revision \texttt{7ae557604...}. All novelty experiments use Transformers 4.57.6, float32 CPU inference, evaluation mode, greedy decoding (\texttt{do\_sample=False}), and 64 new tokens. Model choice and revisions were frozen before the strengthening workflow ran.
 
-\subsection{Adaptive evasion}
+\subsection{Detector-targeted white-box evasion}
 The preregistered adaptive set contains 100 suspicious authorized and 100 unauthorized requests. A deterministic finite substitution neighborhood greedily minimizes the frozen lexical injection-risk score and then sensitivity, while preserving the target and affirmative disclosure intent. The attack does not query model outputs while searching, so the optimization directly probes the heuristic feature rather than tuning to generation outcomes.
+
+This is a white-box feature-level threat model: the search calls the detector's scoring functions directly, and the frozen substitution vocabulary was designed with knowledge of the detector vocabulary. It therefore tests this detector's reformulation sensitivity, not black-box attacker realism or heuristic detectors generally.
 
 Semantic preservation is checked independently in two ways. A pinned sentence encoder evaluates all 200 pairs against a preregistered cosine threshold of 0.50. Separately, pinned Qwen judges one representative per source template (19 total) using a binary semantic-equivalence instruction. Neither is labeled as human annotation.
 

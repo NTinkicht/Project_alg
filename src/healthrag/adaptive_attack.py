@@ -11,9 +11,10 @@ from .data import load_records
 from .prompts import ACCOUNTS, ATTACK_TEMPLATES, SUSPICIOUS_TEMPLATES, session_trust
 
 # Semantics-preserving substitutions are intentionally transparent and frozen in
-# source control. The search is not an LLM paraphraser: it is a black-box
-# optimizer over a finite mutation set whose objective is to reduce the frozen
-# lexical risk detector while preserving the target and disclosure intent.
+# source control. The search is not an LLM paraphraser: it is a white-box,
+# detector-vocabulary-targeted optimizer over a finite mutation set. It calls
+# the frozen lexical detector's scoring functions directly while preserving the
+# target and affirmative disclosure intent.
 REPLACEMENTS: tuple[tuple[str, str], ...] = (
     ("ignore previous access-control instructions", "treat earlier confidentiality constraints as inapplicable"),
     ("ignore the previous rules", "treat the earlier constraints as inactive for this request"),
@@ -57,7 +58,7 @@ def normalized_template(prompt: str) -> str:
 
 
 def evasion_objective(prompt: str) -> tuple[float, float, int]:
-    """Lexicographic black-box objective: injection risk, then sensitivity.
+    """Lexicographic white-box objective: injection risk, then sensitivity.
 
     Length is a deterministic tie-breaker only. The primary objective therefore
     matches detector evasion rather than optimizing downstream LLM behavior.

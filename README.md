@@ -1,70 +1,66 @@
-# Authenticated Pre-Retrieval Authorization for Healthcare RAG
+# Structural versus Heuristic Security in Healthcare RAG
 
-This repository is the reproducible software artifact for a focused conference-paper study of authentication, authorization placement, prompt injection, risk-aware handling, and formal verification in a synthetic healthcare Retrieval-Augmented Generation (RAG) system.
+This repository is the reproducible software artifact for **When Heuristics Fail but Boundaries Hold: Structural versus Heuristic Security in Healthcare RAG**. It evaluates authorization placement, wording-sensitive risk triage, context exposure, generated disclosure, and authorization-scope scaling using synthetic Synthea records.
+
+## Current study at a glance
+
+- Deterministic Synthea v4.0.0 corpus: **1,000 synthetic patients**, seed `4103`.
+- Architectures: prompt-only policy, deterministic pre-retrieval ACL, and risk-aware triage followed by the same mandatory ACL.
+- Primary benchmark: **3,000 cases / 9,000 architecture executions** with SmolLM2-360M-Instruct.
+- Controlled utility benchmark: **1,000 cases / 3,000 executions** at `k=1`.
+- Qwen2.5-0.5B-Instruct replication: **13,500 executions** across primary, controlled, held-out, and detector-targeted conditions.
+- Additional strengthening evidence: 600 Smol detector-targeted executions, a 750-row exact Smol rerun, 1,080 scale generations, 35,000 risk-ablation decisions, cluster-aware inference, and property-based correspondence tests.
+
+The authoritative reproduction guide, pinned revisions, workflow run, result manifest, checksums, and interpretation constraints are in [`paper/README_REPRODUCIBILITY.md`](paper/README_REPRODUCIBILITY.md). The preregistration is in [`paper/NOVELTY8_PREREGISTRATION.md`](paper/NOVELTY8_PREREGISTRATION.md), and frozen reported results are in [`paper/FINAL_RESULTS.md`](paper/FINAL_RESULTS.md).
+
+The complete validated raw evidence snapshot is permanently archived at [`paper/evidence/healthrag_novelty8_final_actions_artifact.zip`](paper/evidence/healthrag_novelty8_final_actions_artifact.zip) with SHA-256 `a686d96614a57a5e96845abff191491c761fd3ad509b342e3c8b0a0640841b90`.
 
 ## Research design
 
-The primary experiment compares three architectures using the **same Synthea-derived patient corpus, prompts, retriever, and language model**:
+The study compares three architectures using the same corpus, prompts, retriever, and model:
 
-1. **Prompt-only authorization (baseline)** - retrieval may include records outside the authenticated account's permissions; the LLM is instructed not to disclose them.
-2. **Deterministic pre-retrieval ACL** - application code applies patient-level authorization before retrieval, so unauthorized records cannot enter the LLM context.
-3. **Risk-aware pre-retrieval authorization** - an interpretable fuzzy risk layer produces `ALLOW`, `STEP_UP`, or `DENY`, followed by the same mandatory deterministic ACL. Fuzzy `ALLOW` never expands the authorized set.
+1. **Prompt-only policy baseline** - retrieval may include records outside the authenticated account's permissions; text instructions ask the model not to disclose them.
+2. **Deterministic pre-retrieval ACL** - application code restricts the retrieval candidate set to patient records authorized for the authenticated identity.
+3. **Risk-aware pre-retrieval authorization** - an interpretable risk layer returns `ALLOW`, `STEP_UP`, or `DENY`, followed by the same mandatory ACL. The risk layer may narrow access but never widen the authorized set.
 
-The primary causal comparison is **(1) vs (2)**. Architecture (3) is a secondary adaptive-security extension, which avoids confounding the effect of authorization placement with the fuzzy layer.
+The structural result is an implementation invariant under the stated threat model: if candidate construction correctly restricts retrieval to the authenticated identity's ACL, prompt wording cannot add an unauthorized record. Experiments and property tests confirm correspondence on tested inputs; they do not prove zero real-world leakage.
 
-## Authentication boundary
-
-Authentication and authorization are separate controls. The artifact contains a lightweight HMAC-signed bearer-token `Authenticator` that resolves a credential to a known software principal and rejects malformed, unknown, or tampered credentials. The adversarial RAG experiment begins after successful authentication so that authorization placement remains the independent variable; authentication failure is covered by unit tests and the NuSMV state model.
-
-## Dataset
-
-The CI workflow downloads a **pinned public Synthea FHIR R4 sample snapshot** from `synthetichealth/synthea-sample-data` commit `9959d9178ea28f4ec10f17ee238b6fabe6eb0de5`. A deterministic SHA-256 ordering selects 25 patient bundles. Accounts A-D receive five patient aliases each, Account E receives none, and PAT-21..PAT-25 remain a protected pool. Each normalized patient document receives a unique experimental canary for objective disclosure measurement.
-
-## Prompt suite
-
-72 deterministic test cases:
-
-- 18 legitimate authorized requests
-- 12 authorized but suspicious requests (risk-layer evaluation)
-- 42 unauthorized/adversarial requests across six categories
-
-Each case is executed against all three architectures (216 architecture-level run records).
+The heuristic experiment is deliberately narrow. Its baseline is a transparent fixed **22-entry lexical detector**. The preregistered detector-targeted search is **white-box**: it directly calls the detector's scoring functions using a frozen, detector-informed substitution vocabulary. Results therefore characterize this lexical detector family and must not be generalized to learned, embedding-based, LLM-based, or black-box detectors.
 
 ## Main metrics
 
-- **UCER** - Unauthorized Context Exposure Rate: unauthorized tests where an out-of-scope patient record enters retrieved context.
-- **Canary UDR** - Unauthorized Disclosure Rate operationalized as exact emission of an out-of-scope patient's unique canary; this is intentionally a conservative lower bound on semantic leakage.
+- **UCER** - Unauthorized Context Exposure Rate: whether an unauthorized target enters model context.
+- **Canary UDR** - Unauthorized Disclosure Rate: whether generated text emits an out-of-scope record's synthetic marker.
+- **SBSR** - Structural Boundary Survival Rate on unauthorized adversarial requests.
+- **HDR** - Heuristic Detection Retention after distribution shift.
 - **ARSR** - Authorized Request Success Rate.
-- **FRR** - False Rejection Rate for legitimate authorized requests.
-- Legitimate-path latency and fuzzy decision distribution are secondary measures.
+- **FRR** - False Rejection Rate for legitimate requests.
 
-## Formal verification
-
-`formal/secured.smv` models:
-
-`LOGIN -> AUTHENTICATED -> RISK_CHECK -> ACL_CHECK -> RETRIEVE -> LLM_RESPONSE -> COMPLETE/DENIED`
-
-Seven CTL properties check the authentication gate, deterministic authorization boundary, fuzzy non-bypass property, and liveness. `formal/negative_control.smv` intentionally removes the authentication/ACL gates before retrieval; its corresponding security properties must be falsified and produce counterexample traces. CI fails if a secured property is false or if the negative control cannot falsify a boundary property.
-
-## Local quick test
+## Quick software tests
 
 ```bash
 python -m pip install -e '.[test]'
 pytest -q
 ```
 
-## Full empirical reproduction
+## Reproduce the publication study
+
+The publication corpus and full experiment should be run through the pinned workflows rather than the small developer defaults:
+
+- [`.github/workflows/research.yml`](.github/workflows/research.yml) builds the 1,000-patient Synthea corpus and primary SmolLM2 evidence.
+- [`.github/workflows/novelty8.yml`](.github/workflows/novelty8.yml) runs the preregistered strengthening, Qwen replication, semantic checks, ablations, exact rerun, and scale experiment.
+
+For the exact commands, revisions, artifact identities, and validation rules, follow [`paper/README_REPRODUCIBILITY.md`](paper/README_REPRODUCIBILITY.md). Running `python -m healthrag.data` without publication parameters creates only the 25-patient developer fixture and does **not** reproduce the paper.
+
+## Manuscript
+
+Build the IEEEtran paper from `paper/`:
 
 ```bash
-python -m pip install -e '.[experiment,test]'
-python -m healthrag.data
-python -m healthrag.prompts
-python -m healthrag.experiment --model HuggingFaceTB/SmolLM2-360M-Instruct
-python -m healthrag.analysis
+pdflatex -interaction=nonstopmode -halt-on-error healthrag_final.tex
+pdflatex -interaction=nonstopmode -halt-on-error healthrag_final.tex
 ```
-
-The GitHub Actions workflow also runs NuSMV 2.7.1, records dependency and dataset versions, and uploads the empirical, statistical, and formal-verification artifacts.
 
 ## Scope
 
-This is a synthetic software-security experiment. It uses no real patients, clinicians, hospitals, clinical decisions, or human-subject research. It does not evaluate medical correctness.
+This is a synthetic software-security experiment. It uses no real patients, clinicians, hospitals, clinical decisions, or human-subject research. Healthcare is the application domain, not evidence of clinical validation. The study does not provide cryptographic confidentiality, exhaustive formal verification, or universal claims about heuristic security.
