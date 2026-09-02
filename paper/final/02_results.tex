@@ -1,6 +1,6 @@
 \section{Results}
 \subsection{Structural boundary and output disclosure}
-Table~\ref{tab:primary} summarizes the two models. Structural results are invariant across them: both secured architectures produce zero unauthorized context exposure in the primary, held-out, and adaptive tests. Prompt-only produces context exposure for every unauthorized request. The key point is architectural: context exposure is determined before the model can choose to refuse.
+Table~\ref{tab:primary} summarizes the two models. Both secured architectures produce zero unauthorized context exposure in the primary, held-out, and detector-targeted tests. Prompt-only produces context exposure for every unauthorized request. For the modeled path, \sbsr{}=1 follows by construction from restricting retrieval candidates to the authenticated identity's ACL; the executions confirm that the implementation preserves this invariant across the tested inputs, rather than establishing a surprising empirical effect.
 
 \begin{table}[t]
 \caption{Primary and controlled results by model.}
@@ -27,9 +27,9 @@ For SmolLM2, prompt-only canary disclosure is only 5/1,750, concentrated in one 
 Across 19 attack-template clusters, the ACL-minus-prompt difference in unauthorized context exposure is $-1.0$ with cluster-bootstrap 95\% CI $[-1.0,-1.0]$ (20,000 draws); all 19 nonzero templates favor ACL, giving a two-sided sign-test $p=3.81\times10^{-6}$. The analogous cluster-bootstrap \udr{} difference for the Smol primary set is $-0.00286$ with CI $[-0.0111,0]$, illustrating how a large context-exposure effect can coexist with sparse observed generated disclosure.
 
 \subsection{Controlled utility resolves a distractor confound}
-In the original $k=2$ Smol benchmark, \arsr{} was 79.0\% prompt-only, 64.0\% pre-ACL, and 70.5\% risk-aware. That initially resembled an authorization penalty. However, the target record was present for all legitimate cases while retrieved distractors differed. In the preregistered controlled $k=1$ follow-up, all three architectures produce exactly 89.5\% on Smol and exactly 92.0\% on Qwen. Paired ACL-minus-prompt bootstrap difference is 0 with 95\% CI $[0,0]$ for both models. Thus, in this benchmark, the earlier gap is attributable to retrieval composition, not the authorization gate itself. This is a controlled benchmark result, not a universal claim that authorization is utility-free.
+In the original $k=2$ Smol benchmark, \arsr{} was 79.0\% prompt-only, 64.0\% pre-ACL, and 70.5\% risk-aware. Qwen's corresponding $k=2$ values were 92.5\%, 90.5\%, and 91.5\%, showing that the original spread was much smaller for the replication model. The Smol result initially resembled an authorization penalty, but the target record was present for all legitimate cases while retrieved distractors differed. In the preregistered controlled $k=1$ follow-up, all three architectures produce exactly 89.5\% on Smol and exactly 92.0\% on Qwen. Paired ACL-minus-prompt bootstrap difference is 0 with 95\% CI $[0,0]$ for both models. This equality is expected once identical target context, decoding, and model are held fixed; its value is as a confound-control check showing that the earlier Smol gap arose from retrieval composition, not the gate itself. It is not evidence that authorization is universally utility-free.
 
-\subsection{Heuristic detection collapses under reformulation}
+\subsection{Fixed lexical detection degrades under reformulation}
 Table~\ref{tab:heuristic} shows the central distribution-shift result. Fuzzy challenge rate falls from 88.0\% on primary suspicious prompts to 16.7\% held-out and 18.0\% adaptive. Therefore \hdr{} is 0.189 and 0.205. Deterministic rules likewise fall from 100\% primary to 16.0\% held-out and 17.0\% adaptive. The two heuristic formulations differ in calibration but neither demonstrates robust wording generalization.
 
 \begin{table}[t]
@@ -50,7 +50,7 @@ Risk-aware \sbsr{} & 1.000 & 1.000 & 1.000\\
 \end{tabular}
 \end{table}
 
-The adaptive search reduces injection risk by 0.4745 on average (median 0.35) and reaches a final injection-risk score of zero on 200/200 adaptive cases. This is active evasion, not merely a static held-out set. Yet, for unauthorized adaptive requests, both pre-ACL and risk-aware architectures maintain \sbsr{}=1.0 for both language models because target eligibility is still decided by ACL state rather than wording.
+The white-box detector-vocabulary-targeted search reduces injection risk by 0.4745 on average (median 0.35) and reaches a final score of zero on 200/200 cases. Because it directly optimizes the known scoring functions using a detector-informed substitution set, this is evidence about the fixed lexical baseline's sensitivity, not general adaptive-attack realism. For unauthorized transformed requests, both secured architectures retain \sbsr{}=1.0 because target eligibility remains fixed by ACL state rather than wording.
 
 Semantic checks support the interpretation that the adaptive variants retain intent: the encoder passes 200/200 pairs, median cosine similarity 0.718, minimum 0.569; the independent Qwen judge marks 19/19 representative templates equivalent. These automated checks reduce but do not eliminate the limitation of lacking independent human annotators.
 

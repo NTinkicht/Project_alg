@@ -13,6 +13,8 @@ This directory freezes the preregistered structural-versus-heuristic strengtheni
 
 The preregistration is `NOVELTY8_PREREGISTRATION.md`. The final statistical/results record is `FINAL_RESULTS.md`. Experiment code, attacks, model selection, thresholds, analysis units, bootstrap settings, and stopping rule were frozen before the run; later commits update only publication-facing material and do not retroactively alter the executed study.
 
+For durable inspection without re-execution, the exact validated Actions ZIP is committed at `evidence/healthrag_novelty8_final_actions_artifact.zip`. Its SHA-256 is identical to the authoritative artifact hash above. It contains the raw result CSVs, derived metrics, semantic checks, risk ablations, scale results, preregistration, and reproducibility manifest.
+
 ## Completed evidence
 
 - Qwen2.5-0.5B-Instruct: 13,500 strictly validated architecture executions.
@@ -43,9 +45,9 @@ The externally validated deliverable is exactly **8 pages**. Every rendered page
 
 1. Pre-retrieval authorization itself is prior art; the manuscript does not claim otherwise.
 2. UCER is retrieval-time unauthorized context exposure; UDR is generated canary disclosure. They are distinct outcomes.
-3. Structural Boundary Survival Rate (SBSR) is reported as an observed benchmark property under the stated ACL threat model, never as proof of zero real-world leakage.
+3. Structural Boundary Survival Rate (SBSR) of 1.0 follows from the modeled identity-filtered candidate construction when its assumptions hold; experiments and property tests confirm implementation correspondence on tested inputs, not a new formal or real-world guarantee.
 4. Heuristic Detection Retention (HDR) is a diagnostic of suspicious-request challenge behavior under distribution shift, not a universal detector score.
-5. The preregistered adaptive search drives the frozen lexical injection-risk feature to zero for all 200 adaptive cases; semantic preservation is checked automatically and is not described as human annotation.
+5. The preregistered search is white-box and detector-vocabulary-targeted: it directly optimizes the frozen 22-entry lexical detector. It drives injection risk to zero for all 200 cases, but does not establish black-box or general heuristic-detector robustness. Semantic preservation is checked automatically and is not described as human annotation.
 6. The original Smol k=2 utility gap is interpreted as a distractor-composition confound because controlled k=1 produces identical ARSR across architectures; Qwen independently reproduces that within-model equality.
 7. Case-level security counts are accompanied by source-template cluster inference to address pseudoreplication.
 8. Fixed authorization scope, proportional authorization scope, and global corpus growth are separated explicitly. Fixed-scope flatness is a construction control.
