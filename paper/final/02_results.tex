@@ -1,0 +1,110 @@
+\section{Results}
+\subsection{Structural boundary and output disclosure}
+Table~\ref{tab:primary} summarizes the two models. Structural results are invariant across them: both secured architectures produce zero unauthorized context exposure in the primary, held-out, and adaptive tests. Prompt-only produces context exposure for every unauthorized request. The key point is architectural: context exposure is determined before the model can choose to refuse.
+
+\begin{table}[t]
+\caption{Primary and controlled results by model.}
+\label{tab:primary}
+\centering
+\small
+\begin{tabular}{llccc}
+\toprule
+Model & Architecture & \ucer{} & \udr{} & \arsr{} $k{=}1$\\
+\midrule
+\multirow{3}{*}{SmolLM2} & Prompt-only & 100\% & 0.286\% & 89.5\%\\
+& Pre-ACL & 0\% & 0\% & 89.5\%\\
+& Risk-aware & 0\% & 0\% & 89.5\%\\
+\midrule
+\multirow{3}{*}{Qwen2.5} & Prompt-only & 100\% & 3.086\% & 92.0\%\\
+& Pre-ACL & 0\% & 0\% & 92.0\%\\
+& Risk-aware & 0\% & 0\% & 92.0\%\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+For SmolLM2, prompt-only canary disclosure is only 5/1,750, concentrated in one repeated multi-step template. The case-level 5-to-0 difference does not meet a conventional exact McNemar threshold ($p=0.0625$ in the prior audit), and the new template-level sign test has only one nonzero cluster ($p=1.0$). For Qwen, prompt-only primary \udr{} is 3.086\%, demonstrating that output leakage is model-dependent even while context exposure is structurally identical. On adaptive Qwen cases, prompt-only \udr{} is 8\%; both secured variants remain at 0. This is why we avoid treating output refusal as a substitute for retrieval authorization.
+
+Across 19 attack-template clusters, the ACL-minus-prompt difference in unauthorized context exposure is $-1.0$ with cluster-bootstrap 95\% CI $[-1.0,-1.0]$ (20,000 draws); all 19 nonzero templates favor ACL, giving a two-sided sign-test $p=3.81\times10^{-6}$. The analogous cluster-bootstrap \udr{} difference for the Smol primary set is $-0.00286$ with CI $[-0.0111,0]$, illustrating how a large context-exposure effect can coexist with sparse observed generated disclosure.
+
+\subsection{Controlled utility resolves a distractor confound}
+In the original $k=2$ Smol benchmark, \arsr{} was 79.0\% prompt-only, 64.0\% pre-ACL, and 70.5\% risk-aware. That initially resembled an authorization penalty. However, the target record was present for all legitimate cases while retrieved distractors differed. In the preregistered controlled $k=1$ follow-up, all three architectures produce exactly 89.5\% on Smol and exactly 92.0\% on Qwen. Paired ACL-minus-prompt bootstrap difference is 0 with 95\% CI $[0,0]$ for both models. Thus, in this benchmark, the earlier gap is attributable to retrieval composition, not the authorization gate itself. This is a controlled benchmark result, not a universal claim that authorization is utility-free.
+
+\subsection{Heuristic detection collapses under reformulation}
+Table~\ref{tab:heuristic} shows the central distribution-shift result. Fuzzy challenge rate falls from 88.0\% on primary suspicious prompts to 16.7\% held-out and 18.0\% adaptive. Therefore \hdr{} is 0.189 and 0.205. Deterministic rules likewise fall from 100\% primary to 16.0\% held-out and 17.0\% adaptive. The two heuristic formulations differ in calibration but neither demonstrates robust wording generalization.
+
+\begin{table}[t]
+\caption{Heuristic triage versus structural boundary.}
+\label{tab:heuristic}
+\centering
+\small
+\begin{tabular}{lccc}
+\toprule
+Metric & Primary & Held-out & Adaptive\\
+\midrule
+Fuzzy challenge & 88.0\% & 16.7\% & 18.0\%\\
+Rules challenge & 100.0\% & 16.0\% & 17.0\%\\
+Fuzzy \hdr{} & 1.000 & 0.189 & 0.205\\
+ACL \sbsr{} & 1.000 & 1.000 & 1.000\\
+Risk-aware \sbsr{} & 1.000 & 1.000 & 1.000\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The adaptive search reduces injection risk by 0.4745 on average (median 0.35) and reaches a final injection-risk score of zero on 200/200 adaptive cases. This is active evasion, not merely a static held-out set. Yet, for unauthorized adaptive requests, both pre-ACL and risk-aware architectures maintain \sbsr{}=1.0 for both language models because target eligibility is still decided by ACL state rather than wording.
+
+Semantic checks support the interpretation that the adaptive variants retain intent: the encoder passes 200/200 pairs, median cosine similarity 0.718, minimum 0.569; the independent Qwen judge marks 19/19 representative templates equivalent. These automated checks reduce but do not eliminate the limitation of lacking independent human annotators.
+
+\subsection{Feature ablation explains the mechanism}
+The ablation results make the contrast causal within the implemented controller. With all fuzzy features present, unauthorized deny rate is 100\% on held-out and adaptive sets. Neutralizing authorization confidence reduces unauthorized deny to 0\% on both shifted sets; neutralizing injection risk or sensitivity leaves unauthorized deny at 100\%. In other words, the feature that preserves confidentiality is the policy-derived structural signal. The request-derived lexical feature helps triage in-distribution suspicious prompts but contributes little once adversarial wording drives injection risk to zero.
+
+Session trust affects challenge behavior but is not category-derived in the revised implementation. We therefore do not interpret its removal as evidence of a security boundary. The ablation is instead a warning against presenting a multi-feature risk score as if every feature contributed equally to confidentiality.
+
+\subsection{Fixed versus proportional authorization scope}
+Table~\ref{tab:scale} completes the previously missing generation-level proportional-ACL cell. ACL-fixed \arsr{} is 87.8\% at all three scales, while ACL-proportional is 87.8\%, 88.9\%, and 88.9\%. Target-fixed remains 94.4\%. Unfiltered increases modestly from 83.3\% to 87.8\%; the study therefore does \emph{not} support a claim that global corpus growth necessarily degrades generated answer success in this sample.
+
+\begin{table}[t]
+\caption{Fresh scale matrix (90 fixed queries per cell).}
+\label{tab:scale}
+\centering
+\small
+\begin{tabular}{rccc}
+\toprule
+Mode & 1K & 10K & 100K\\
+\midrule
+Unfiltered \arsr{} & 83.3\% & 85.6\% & 87.8\%\\
+ACL-fixed \arsr{} & 87.8\% & 87.8\% & 87.8\%\\
+ACL-prop. \arsr{} & 87.8\% & 88.9\% & 88.9\%\\
+Target-fixed \arsr{} & 94.4\% & 94.4\% & 94.4\%\\
+\midrule
+Unfiltered retr. ms & 4.10 & 13.01 & 112.66\\
+ACL-fixed retr. ms & 2.15 & 2.55 & 2.36\\
+ACL-prop. retr. ms & 1.89 & 3.91 & 25.53\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The meaningful scale effect is instead candidate-set cost. Unfiltered candidates grow 1,000$\rightarrow$10,000$\rightarrow$100,000 and median retrieval latency grows 4.10$\rightarrow$13.01$\rightarrow$112.66 ms. ACL-proportional candidates grow 200$\rightarrow$2,000$\rightarrow$20,000 and latency grows 1.89$\rightarrow$3.91$\rightarrow$25.53 ms. ACL-fixed remains at 200 candidates and near 2--3 ms. The flat fixed-scope result is partly guaranteed by construction; it should be read as a control showing that global corpus size alone need not increase work once policy filtering fixes the visible search domain.
+
+Authorization density clarifies the comparison. ACL proportional holds $\rho=0.2$ while absolute authorized scope grows 100$\times$; ACL fixed drops from $\rho=0.2$ at 1K to $0.002$ at 100K while absolute scope remains 200. Hence the relevant systems variable is not only global corpus size, but the size of the caller-visible candidate domain.
+
+\section{Statistical and Reproducibility Strengthening}
+Repeated target substitutions create pseudoreplication if every case is treated as a distinct attack strategy. We therefore retain case-level exact tests for continuity but treat source prompt template as the cluster for security resampling. Whole templates are resampled in a paired cluster bootstrap (20,000 draws, seed 4103), and a template-level paired sign test reports direction across nonzero clusters. This changes the evidential emphasis: the context-exposure result is robust across all 19 templates, while sparse Smol canary disclosure is acknowledged as concentrated in one template rather than advertised through an inflated case count.
+
+The final strengthening workflow executes 13,500 Qwen architecture rows, 600 Smol adaptive rows, a 750-row Smol reproducibility shard, and 1,080 fresh scale generations. Strict assertions verify row counts, unique case/architecture pairs, and allowed architecture labels before artifact upload. The exact Smol primary-shard repeat matches the authoritative prior shard byte-for-byte after CSV parsing for generated response text, retrieval identities, discrete security/utility outcomes, and rejection decisions; timing fields are excluded. Both the reference and rerun digest are \texttt{1712cbee...}. All checksums in the final reproducibility manifest were independently recomputed after download and matched.
+
+Property-based tests complement the NuSMV abstraction. The secured model previously satisfied seven of seven CTL properties while a deliberately vulnerable negative control violated four corresponding safety properties. The new Hypothesis tests exercise randomized implementation states, but we continue to state explicitly that neither the abstraction nor randomized tests constitute exhaustive verification of the Python implementation.
+
+\section{Security Properties and Failure Modes}
+The experimental framing can be restated as a set of implementation obligations. Let $A(u)$ denote the record identifiers authorized for authenticated user $u$, $R(q,S)$ the retriever result for query $q$ restricted to candidate set $S$, and $K$ the context ultimately supplied to the generator. The structural invariant tested by the secured architectures is
+\begin{equation}
+R(q,A(u)) \subseteq A(u), \qquad K \subseteq A(u).
+\end{equation}
+The risk controller may transform the execution state from allow to challenge or deny, but it is not permitted to replace $A(u)$ with a superset. Thus a heuristic false negative can remove an extra safeguard without changing the maximum authorized retrieval domain. This property is the reason the adaptive attack can successfully evade lexical suspicion yet fail to expand context reachability.
+
+The vulnerable prompt-only condition intentionally violates that construction by retrieving from the global corpus $C$ and relying on textual policy instructions to influence the generator. In that condition, the security question is delegated to model behavior after context selection. The observed data illustrate the consequence: \ucer{} is 1.0 even when \udr{} is near zero. A refusal can therefore be a desirable output behavior while still being an inadequate confidentiality mechanism.
+
+The formal NuSMV abstraction captures this ordering at a coarser state-machine level: authentication and authorization precede retrieval, denied states cannot transition into sensitive context assembly, and the risk layer cannot create permissions. A vulnerable negative-control model deliberately removes corresponding guards and produces counterexamples. The value of the formal model is not that it proves the concrete Python program, but that it makes the intended temporal ordering explicit and testable. The property-based tests then sample concrete Python states to check correspondence with those obligations across randomized ACLs and target combinations.
+
+Three failure classes remain deliberately outside the demonstrated invariant. First, \emph{policy correctness}: if $A(u)$ itself is wrong because identity, group membership, or metadata is compromised, pre-retrieval enforcement will faithfully enforce the wrong policy. Second, \emph{side-channel reachability}: a record excluded from the tested retriever might still influence a model through caches, embeddings exposed through another API, logs, training data, or agent tools. Third, \emph{semantic authorization}: this prototype authorizes records, not arbitrary facts derived across records. Preventing inference of sensitive attributes from otherwise authorized information is a different problem.
+
+These distinctions matter when positioning the result relative to encrypted or formally secure RAG. Cryptographic frameworks can protect stored representations and establish confidentiality under explicit computational assumptions \cite{zhou2025provable}. Our contribution is weaker in guarantee but complementary in systems methodology: we show how a conventional application-layer authorization boundary can be evaluated separately from heuristic detection, and how output-only leakage metrics can obscure context exposure. Claims should therefore remain at the level of the implemented threat model rather than borrowing the language of cryptographic proof.
