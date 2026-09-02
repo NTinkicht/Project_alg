@@ -1,0 +1,59 @@
+\maketitle
+
+\begin{abstract}
+Retrieval-augmented generation (RAG) security mechanisms are often discussed as a single defense stack even though they fail in different ways. We distinguish \emph{structural controls}, whose decisions are determined by authenticated policy state and enforced outside language-model behavior, from \emph{heuristic controls}, whose decisions depend on request- or session-derived features. We test this distinction in a reproducible healthcare RAG prototype using synthetic Synthea records. Across two pinned small instruction models, pre-retrieval authorization yields zero unauthorized context exposure in 1,750 primary, 150 held-out, and 100 adaptive unauthorized cases per secured architecture, giving a Structural Boundary Survival Rate of 1.0 in all tested distributions. In contrast, fuzzy suspicious-request challenge rate drops from 88.0\% in-distribution to 16.7\% on lexically disjoint paraphrases and 18.0\% under a preregistered adaptive evasion search; Heuristic Detection Retention is 0.189 and 0.205, respectively. The adaptive search reduces the frozen injection-risk feature by 0.475 on average and drives it to zero for every adaptive case, while independent encoder and LLM-judge checks retain semantic intent. A second model, Qwen2.5-0.5B-Instruct, reproduces the structural security result and the controlled utility conclusion: when retrieval composition is fixed at $k=1$, prompt-only, ACL, and risk-aware variants obtain identical authorized-task success within each model. A fresh 1,080-generation scale experiment further separates global-corpus growth from caller-visible authorization-scope growth. Fixed-scope ACL utility remains flat by construction, whereas proportional scope grows from 200 to 20,000 candidates and retrieval latency rises accordingly. Cluster-aware inference, feature ablations, property-based correspondence tests, and an exact empirical rerun strengthen the methodology. The results support a design principle: heuristic layers may recognize suspicious behavior, but confidentiality boundaries should be enforced structurally before sensitive context is assembled.
+\end{abstract}
+
+\begin{IEEEkeywords}
+retrieval-augmented generation, access control, authorization, healthcare security, prompt injection, adversarial robustness, security evaluation
+\end{IEEEkeywords}
+
+\section{Introduction}
+Retrieval-augmented generation (RAG) couples a language model to an external corpus so that responses can be grounded in information unavailable in model parameters \cite{lewis2020rag}. In healthcare, enterprise, and regulated deployments, this changes the security problem. A response can be harmless while the model has already received a record that the caller was never authorized to retrieve. Conversely, a heuristic prompt-injection detector can correctly identify suspicious wording without providing any hard guarantee about which records are reachable. Treating those mechanisms as interchangeable ``guardrails'' obscures their different failure modes.
+
+Recent work has established access-aware retrieval as a practical design direction. Chen \emph{et al.} integrate access control into patient-profile RAG \cite{chen2025sac}; Jeong and Lee evaluate IAM-based permission filtering \cite{jeong2025permission}; and Chen and Taipalus study metadata-aware filtering and RBAC \cite{chen2026metadata}. Recent security taxonomies also emphasize that RAG exposes multiple stages---storage, retrieval, context construction, and generation---to different threats \cite{xu2026taxonomy,palanisamy2026survey}. The novelty of our study is therefore \emph{not} the observation that authorization should exist, nor the invention of pre-retrieval ACL filtering.
+
+Instead, we ask a more general empirical question: \textbf{do structural and heuristic security controls generalize differently under wording shift, adaptive evasion, and deployment scale?} We define a structural control as a boundary whose decision is determined by authenticated principal/policy state and enforced independently of model compliance. In our prototype, ACL filtering before retrieval is structural. We define a heuristic control as one whose action depends on request-derived or session-derived features; our fuzzy and transparent rule-based risk controllers are examples.
+
+This distinction matters because current RAG attack literature demonstrates strong adaptive adversaries. Datastore extraction can exploit instruction following \cite{qi2025spill}, adaptive black-box attacks can iteratively discover leakage-relevant anchors \cite{dimaio2025pirates}, and retrieval hijacking can manipulate what context is selected \cite{zhang2024hijack}. Newer layered defense proposals combine input, context, and output checks \cite{saleem2026layered}, while provably secure approaches use cryptographic mechanisms to protect retrieval \cite{zhou2025provable}. Yet, in our literature search through September 2, 2026, we did not identify prior work that jointly (i) measures the same adversarial reformulations against structural authorization and heuristic suspicion triage, (ii) reports template-cluster inference for repeated attack strategies, and (iii) separates global-corpus growth from fixed versus proportional caller-visible authorization scope in one controlled study. We state this as a scoped literature observation, not a claim of exhaustive precedence.
+
+Our contributions are:
+\begin{itemize}
+\item We introduce an operational \emph{structural-versus-heuristic} evaluation framing, with Structural Boundary Survival Rate (\sbsr) and Heuristic Detection Retention (\hdr) as diagnostics.
+\item We run a preregistered adaptive heuristic-evasion benchmark, semantic-equivalence checks, and feature ablations that identify why wording-sensitive triage degrades while ACL denial persists.
+\item We replicate the core security and controlled-utility findings on Qwen2.5-0.5B-Instruct, adding 13,500 architecture executions to the prior SmolLM2 study.
+\item We complete a 1,080-generation four-mode 1K/10K/100K scale matrix that explicitly separates fixed authorization scope from proportional scope using authorization density $\rho$.
+\item We strengthen inference and reproducibility with template-cluster bootstrap/sign tests, 20,000-draw paired bootstrap intervals, property-based implementation checks, pinned revisions, and an exact empirical rerun.
+\end{itemize}
+
+\section{Related Work}
+\subsection{Authorization-aware and privacy-oriented RAG}
+Permission-aware RAG is increasingly mature. Chen \emph{et al.} demonstrate access-control integration in a patient-profile proof of concept \cite{chen2025sac}. Permission-Aware RAG validates access through IAM services in multi-resource settings \cite{jeong2025permission}. Metadata-aware RAG uses metadata for secure filtering and fine-grained RBAC \cite{chen2026metadata}. ARBITER combines role-aware retrieval with input/output validation \cite{lorenzo2025arbiter}, and Moulton \emph{et al.} compare ABAC with redaction and guardrails in an economic control analysis \cite{moulton2025roc}. These studies reinforce the value of access-aware retrieval; our work differs by evaluating the \emph{generalization behavior} of structural policy enforcement versus wording-dependent heuristics and by treating context exposure as distinct from generated disclosure.
+
+A 2026 security/privacy survey maps threats across retrieval, context construction, and generation \cite{palanisamy2026survey}; another taxonomy organizes attacks and defenses by pipeline surface, defense layer, objective, and target \cite{xu2026taxonomy}. Both motivate stage-specific evaluation. A recent secure-RAG governance article similarly argues for identity-aware filtering and policy enforcement across the pipeline \cite{boggarapu2026secure}. Our experimental contribution complements these architectural positions with paired measurements under held-out and adaptively optimized wording.
+
+\subsection{Adaptive attacks and layered defenses}
+Qi \emph{et al.} show scalable data extraction from RAG systems \cite{qi2025spill}. Di Maio \emph{et al.} adaptively attack knowledge bases by iteratively finding anchors \cite{dimaio2025pirates}, and HijackRAG optimizes malicious database content to steer retrieval \cite{zhang2024hijack}. These attacks target different surfaces than our finite mutation search, but they establish that static attack sets can overestimate robustness.
+
+Layered defenses can reduce attack success by checking user input, retrieved content, and output \cite{saleem2026layered}. Cryptographic work goes further: Zhou \emph{et al.} propose a provably secure encrypted RAG framework \cite{zhou2025provable}. Our ACL boundary does not provide cryptographic confidentiality and should not be compared to such proofs. Rather, we examine a narrower systems property: whether an authenticated authorization set is respected before records enter the LLM context.
+
+\section{Threat Model and Security Boundary}
+The adversary is an authenticated user who can choose query wording but cannot modify server-side ACL state, model weights, or the corpus in this study. Unauthorized requests target a synthetic patient record outside the caller's ACL. Suspicious authorized requests ask for data the caller is allowed to access but use wording associated with bypass, maintenance, or extraction behavior. The distinction lets us ask whether a system preserves confidentiality even when its suspicion detector fails.
+
+We measure four primary outcomes. \ucer{} is Unauthorized Context Exposure Rate: the fraction of unauthorized requests for which at least one unauthorized target reaches model context. \udr{} is a narrow Unauthorized Disclosure Rate based on synthetic canary/security markers in generated text. \arsr{} is Authorized Request Success Rate on legitimate tasks. \frr{} is False Rejection Rate on ordinary legitimate requests.
+
+For distribution-shift analysis we add two diagnostics. For unauthorized adversarial requests,
+\begin{equation}
+\sbsr=\frac{\#\{q: \text{no unauthorized record reaches context}\}}{\#\{q\text{ unauthorized adversarial}\}}.
+\end{equation}
+For heuristic suspicion triage,
+\begin{equation}
+\hdr_D=\frac{\Pr[\text{challenge}\mid D]}{\Pr[\text{challenge}\mid \text{primary suspicious}]},
+\end{equation}
+where $D$ is a held-out or adaptive distribution. \hdr{} is diagnostic, not a universal security score.
+
+Finally, scale is described by authorization density
+\begin{equation}
+\rho=\frac{|A|}{|C|},
+\end{equation}
+where $A$ is the caller-visible candidate set and $C$ the global corpus. This prevents ``100K-scale'' from ambiguously mixing corpus growth with authorization-scope growth.

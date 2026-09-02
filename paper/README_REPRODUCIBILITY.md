@@ -1,46 +1,53 @@
-# HealthRAG final reproducibility bundle
+# HealthRAG novelty-8 reproducibility bundle
 
-This directory freezes the manuscript and publication-facing interpretation for the audit-revised Healthcare RAG authorization study.
+This directory freezes the preregistered structural-versus-heuristic strengthening study, its final publication-safe interpretation, and the IEEEtran manuscript source.
 
-## Authoritative GitHub state
+## Authoritative strengthening run
 
-Core research:
-- Source commit: `b0ebc87ac8b14fc878272f29dfc11c42ff3c588f`
-- Workflow: **Research Reproduction - Audit Revision**
-- Run: `33523950201`, attempt 2, conclusion **success**
-- Artifact: `healthrag-audit-revision-artifacts`, ID `9816904194`
-- Artifact SHA-256: `bfc003e5742a651eb9b412e646271a89d170add7a489a895b7c5a423239bcf52`
+- Preregistered experiment commit: `7b9c0cbcb188da74c08ee4281061fbdb7a7b1f11`
+- Workflow: **Structural vs Heuristic Security - Novelty 8 Strengthening**
+- Run: `33565992867`, conclusion **success**
+- Final artifact: `healthrag-structural-heuristic-novelty8-artifacts`
+- Artifact ID: `9850437939`
+- GitHub artifact SHA-256: `a686d96614a57a5e96845abff191491c761fd3ad509b342e3c8b0a0640841b90`
 
-Scalability:
-- Workflow: **HealthRAG 100K Retrieval Scalability**
-- Run: `33523949995`, conclusion **success**
-- Artifact: `healthrag-scalability-final-artifacts`, ID `9812557736`
-- Artifact SHA-256: `6683ebf6697a146ae84ec35483dddc4d69fc900b2d592aeb67ff708a469de96a`
+The preregistration is `NOVELTY8_PREREGISTRATION.md`. The final statistical/results record is `FINAL_RESULTS.md`. Experiment code, attacks, model selection, thresholds, analysis units, bootstrap settings, and stopping rule were frozen before the run; later commits update only publication-facing material and do not retroactively alter the executed study.
 
-The final manuscript/documentation branch is based exactly on the validated source commit above. Manuscript-only commits do not modify the experiment implementation that produced the authoritative artifacts.
+## Completed evidence
+
+- Qwen2.5-0.5B-Instruct: 13,500 strictly validated architecture executions.
+- SmolLM2 adaptive validation: 600 executions.
+- SmolLM2 exact rerun audit: 750 executions, exact outcome/retrieval/response digest match.
+- Fresh four-mode scale generation: 1,080 rows, including `acl_proportional` at 1K/10K/100K.
+- Adaptive-evasion benchmark: 200 cases.
+- Encoder semantic-equivalence check: 200 pairs; independent Qwen judge: 19 templates.
+- Risk-feature ablation: 35,000 decision rows.
+- Template-cluster inference, 20,000-draw bootstrap intervals, authorization-density diagnostics, and property-based Python correspondence tests.
 
 ## Manuscript source
 
-`healthrag_final.tex` is the IEEEtran entry point and the `sections/` directory contains the paper. Figures are generated directly by TikZ/PGFPlots from the frozen observed values, so no external binary figure assets are required.
+`healthrag_final.tex` is the IEEEtran entry point; the final paper content is in `final/`. The final validated title is **When Heuristics Fail but Boundaries Hold: Structural versus Heuristic Security in Healthcare RAG**.
 
-A standard TeX Live installation with `IEEEtran`, `tikz`, `pgfplots`, `booktabs`, and related common packages is sufficient. The final source uses a manual IEEE bibliography, so BibTeX is not required.
+A standard TeX Live installation with `IEEEtran`, `booktabs`, `multirow`, `amsmath`, `microtype`, `array`, and `enumitem` is sufficient. The bibliography is manual; BibTeX is not required.
 
-Example:
+Build from `paper/`:
 
 ```bash
-pdflatex healthrag_final.tex
-pdflatex healthrag_final.tex
-pdflatex healthrag_final.tex
+pdflatex -interaction=nonstopmode -halt-on-error healthrag_final.tex
+pdflatex -interaction=nonstopmode -halt-on-error healthrag_final.tex
 ```
 
-The validated build has exactly **8 US-Letter pages**. The delivered PDF in the external reproducibility bundle was additionally checked for openability, encryption, scan status, clipping, overlap, and broken glyphs.
+The externally validated deliverable is exactly **8 pages**. Every rendered page was visually inspected for clipping, overlap, broken glyphs, and layout defects.
 
-## Interpretation rules frozen for publication
+## Frozen interpretation rules
 
-1. UCER is unauthorized **retrieval-time context exposure**; UDR is narrow **generated canary disclosure**. They are distinct outcomes.
-2. The original k=2 ARSR difference was confounded by retrieved distractor composition. Controlled k=1 gives 89.5% ARSR for all three architectures.
-3. Structural ACL denial is phrasing-invariant in the held-out set; fuzzy/deterministic suspicious-request heuristics are not.
-4. Fixed-ACL and target-fixed scale conditions are constant-candidate/context controls by construction; their flatness is not an emergent scaling discovery.
-5. `acl_proportional` is evaluated at retrieval level only. No generation-level proportional-ACL claim is made.
-6. NuSMV exhaustively checks the abstract state machine; Python correspondence tests are example-based and do not constitute exhaustive implementation proof.
-7. Case-level attack statistics are accompanied by template-level reporting because repeated prompt templates reduce the effective number of independent attack strategies.
+1. Pre-retrieval authorization itself is prior art; the manuscript does not claim otherwise.
+2. UCER is retrieval-time unauthorized context exposure; UDR is generated canary disclosure. They are distinct outcomes.
+3. Structural Boundary Survival Rate (SBSR) is reported as an observed benchmark property under the stated ACL threat model, never as proof of zero real-world leakage.
+4. Heuristic Detection Retention (HDR) is a diagnostic of suspicious-request challenge behavior under distribution shift, not a universal detector score.
+5. The preregistered adaptive search drives the frozen lexical injection-risk feature to zero for all 200 adaptive cases; semantic preservation is checked automatically and is not described as human annotation.
+6. The original Smol k=2 utility gap is interpreted as a distractor-composition confound because controlled k=1 produces identical ARSR across architectures; Qwen independently reproduces that within-model equality.
+7. Case-level security counts are accompanied by source-template cluster inference to address pseudoreplication.
+8. Fixed authorization scope, proportional authorization scope, and global corpus growth are separated explicitly. Fixed-scope flatness is a construction control.
+9. NuSMV checks the abstract state machine; property-based tests strengthen Python correspondence but do not constitute exhaustive implementation proof.
+10. Claims of fuzzy superiority, cryptographic confidentiality, exhaustive formal verification, universal model-independent output disclosure, or universal scaling behavior are excluded.
